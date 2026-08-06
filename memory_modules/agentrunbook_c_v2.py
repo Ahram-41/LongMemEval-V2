@@ -239,7 +239,6 @@ class AgentRunbookCV2(AgentRunbookC):
     @property
     def memory_config(self) -> MemoryConfig:
         memory_params: dict[str, object] = {
-            "questions_path": str(self.questions_path),
             "evidence_mode": self.evidence_mode,
             "query_openai_sdk_params": {
                 "model": self.sdk_model,
@@ -405,8 +404,7 @@ class AgentRunbookCV2(AgentRunbookC):
     def _run_query_attempt(
         self,
         *,
-        question_id: str,
-        question_item: dict[str, Any],
+        query_invocation_id: str,
         query_text: str,
         query_image: str | None,
     ) -> dict[str, Any]:
@@ -414,13 +412,11 @@ class AgentRunbookCV2(AgentRunbookC):
             self.workspace_dir is not None,
             "agentrunbook_c_v2 workspace_dir is not configured",
         )
-        attempt_index, attempt_dir = self._next_attempt_dir(question_id)
+        attempt_index, attempt_dir = self._next_attempt_dir(query_invocation_id)
         sandbox_dir = attempt_dir / "sandbox"
         sandbox_dir.mkdir(parents=True, exist_ok=True)
 
         question_payload = self._build_question_payload(
-            question_id=question_id,
-            question_item=question_item,
             query_text=query_text,
             query_image=query_image,
             sandbox_dir=sandbox_dir,
@@ -435,7 +431,7 @@ class AgentRunbookCV2(AgentRunbookC):
                 workspace_dir=self.workspace_dir,
             )
             summary: dict[str, Any] = {
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
                 "attempt_index": attempt_index,
                 "completed_at_utc": utc_now_iso(),
                 **self._runner_summary_fields(),
@@ -463,7 +459,7 @@ class AgentRunbookCV2(AgentRunbookC):
             }
             self.online_learning.finalize_attempt(
                 query_trace_dir=self.query_trace_dir,
-                question_id=question_id,
+                query_invocation_id=query_invocation_id,
                 attempt_result=attempt_result,
             )
             return attempt_result
@@ -495,7 +491,7 @@ class AgentRunbookCV2(AgentRunbookC):
         if status_detail is None:
             status_detail = status.detail
         summary: dict[str, Any] = {
-            "question_id": question_id,
+            "query_invocation_id": query_invocation_id,
             "attempt_index": attempt_index,
             "started_at_utc": datetime.fromtimestamp(
                 execution_result["started_at_ts"],
@@ -537,7 +533,7 @@ class AgentRunbookCV2(AgentRunbookC):
             }
             self.online_learning.finalize_attempt(
                 query_trace_dir=self.query_trace_dir,
-                question_id=question_id,
+                query_invocation_id=query_invocation_id,
                 attempt_result=attempt_result,
             )
             return attempt_result
@@ -551,7 +547,7 @@ class AgentRunbookCV2(AgentRunbookC):
             }
             self.online_learning.finalize_attempt(
                 query_trace_dir=self.query_trace_dir,
-                question_id=question_id,
+                query_invocation_id=query_invocation_id,
                 attempt_result=attempt_result,
             )
             return attempt_result
@@ -571,7 +567,7 @@ class AgentRunbookCV2(AgentRunbookC):
             }
             self.online_learning.finalize_attempt(
                 query_trace_dir=self.query_trace_dir,
-                question_id=question_id,
+                query_invocation_id=query_invocation_id,
                 attempt_result=attempt_result,
             )
             return attempt_result
@@ -601,7 +597,7 @@ class AgentRunbookCV2(AgentRunbookC):
         }
         self.online_learning.finalize_attempt(
             query_trace_dir=self.query_trace_dir,
-            question_id=question_id,
+            query_invocation_id=query_invocation_id,
             attempt_result=attempt_result,
         )
         return attempt_result
@@ -616,26 +612,22 @@ class AgentRunbookCV2(AgentRunbookC):
         if not self.online_learning.enabled:
             return None
         query_context = self.get_query_context()
-        question_id_value = query_context.get("question_id")
-        if isinstance(question_id_value, str) and question_id_value.strip():
-            question_id = question_id_value
-        else:
-            question_id = self.question_id_by_text.get(query)
-        if not isinstance(question_id, str) or not question_id:
+        query_invocation_id = query_context.get("query_invocation_id")
+        if not isinstance(query_invocation_id, str) or not query_invocation_id.strip():
             return {
                 "status": "skipped",
-                "reason": "unknown_question_id",
+                "reason": "unknown_query_invocation_id",
             }
 
         attempt_dir = self.online_learning.attempt_for_post_query(
             query_trace_dir=self.query_trace_dir,
-            question_id=question_id,
+            query_invocation_id=query_invocation_id,
         )
         if attempt_dir is None:
             return {
                 "status": "skipped",
                 "reason": "missing_attempt_dir",
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
             }
 
         summary_path = attempt_dir / "summary.json"
@@ -643,7 +635,7 @@ class AgentRunbookCV2(AgentRunbookC):
             return {
                 "status": "skipped",
                 "reason": "missing_attempt_summary",
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
                 "attempt_dir": str(attempt_dir),
             }
         try:
@@ -652,7 +644,7 @@ class AgentRunbookCV2(AgentRunbookC):
             return {
                 "status": "skipped",
                 "reason": "invalid_attempt_summary",
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
                 "attempt_dir": str(attempt_dir),
                 "detail": str(exc),
             }
@@ -660,7 +652,7 @@ class AgentRunbookCV2(AgentRunbookC):
             return {
                 "status": "skipped",
                 "reason": "query_not_finished",
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
                 "attempt_dir": str(attempt_dir),
                 "status_after": (
                     summary_payload.get("status_after")
@@ -674,7 +666,7 @@ class AgentRunbookCV2(AgentRunbookC):
             "online-learning consolidation runner is not configured",
         )
         return self.online_learning.run_consolidation(
-            question_id=question_id,
+            query_invocation_id=query_invocation_id,
             attempt_dir=attempt_dir,
             query_trace_dir=self.query_trace_dir,
             workspace_dir=self.workspace_dir,

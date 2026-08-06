@@ -392,7 +392,7 @@ class AgentRunbookOnlineLearning:
         self.config = config
         self._lock = threading.Lock()
         self._attempt_metadata: dict[str, dict[str, Any]] = {}
-        self._latest_successful_attempt_by_question: dict[str, Path] = {}
+        self._latest_successful_attempt_by_invocation: dict[str, Path] = {}
         self._loaded_strategy_memory_dir: Path | None = None
         if config.enabled:
             require(
@@ -514,15 +514,15 @@ class AgentRunbookOnlineLearning:
         self._attempt_metadata[str(attempt_dir.resolve())] = metadata
         return None
 
-    def latest_attempt_dir(self, *, query_trace_dir: Path | None, question_id: str) -> Path | None:
+    def latest_attempt_dir(self, *, query_trace_dir: Path | None, query_invocation_id: str) -> Path | None:
         if query_trace_dir is None:
             return None
-        question_trace_dir = query_trace_dir / question_id
-        if not question_trace_dir.exists():
+        invocation_trace_dir = query_trace_dir / query_invocation_id
+        if not invocation_trace_dir.exists():
             return None
         attempt_dirs = sorted(
             path
-            for path in question_trace_dir.iterdir()
+            for path in invocation_trace_dir.iterdir()
             if path.is_dir() and path.name.startswith("attempt_")
         )
         return attempt_dirs[-1] if attempt_dirs else None
@@ -531,14 +531,14 @@ class AgentRunbookOnlineLearning:
         self,
         *,
         query_trace_dir: Path | None,
-        question_id: str,
+        query_invocation_id: str,
         attempt_result: dict[str, Any],
     ) -> None:
         if not self.enabled:
             return None
         attempt_dir = self.latest_attempt_dir(
             query_trace_dir=query_trace_dir,
-            question_id=question_id,
+            query_invocation_id=query_invocation_id,
         )
         if attempt_dir is None:
             return None
@@ -594,7 +594,7 @@ class AgentRunbookOnlineLearning:
         )
         self.update_summary_with_attempt(summary_path, metadata)
         if attempt_result.get("success"):
-            self._latest_successful_attempt_by_question[question_id] = attempt_dir
+            self._latest_successful_attempt_by_invocation[query_invocation_id] = attempt_dir
         return None
 
     def update_summary_with_attempt(self, summary_path: Path, metadata: dict[str, Any]) -> None:
@@ -638,7 +638,7 @@ class AgentRunbookOnlineLearning:
     def run_consolidation(
         self,
         *,
-        question_id: str,
+        query_invocation_id: str,
         attempt_dir: Path,
         query_trace_dir: Path | None,
         workspace_dir: Path | None,
@@ -665,7 +665,7 @@ class AgentRunbookOnlineLearning:
         asset_strategy_path = ASSET_ROOT / STRATEGY_FILENAME
 
         metadata: dict[str, Any] = {
-            "question_id": question_id,
+            "query_invocation_id": query_invocation_id,
             "attempt_dir": str(attempt_dir),
             "summary_path": str(summary_path),
             "status": "not_started",
@@ -880,11 +880,11 @@ class AgentRunbookOnlineLearning:
         self,
         *,
         query_trace_dir: Path | None,
-        question_id: str,
+        query_invocation_id: str,
     ) -> Path | None:
-        return self._latest_successful_attempt_by_question.get(question_id) or self.latest_attempt_dir(
+        return self._latest_successful_attempt_by_invocation.get(query_invocation_id) or self.latest_attempt_dir(
             query_trace_dir=query_trace_dir,
-            question_id=question_id,
+            query_invocation_id=query_invocation_id,
         )
 
     def copy_strategy_to(

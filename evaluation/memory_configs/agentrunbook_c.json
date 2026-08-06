@@ -1,7 +1,6 @@
 {
   "memory_type": "agentrunbook_c",
   "memory_params": {
-    "questions_path": "SET_BY_SCRIPT",
     "evidence_mode": "both",
     "trajectory_pool_root": null,
     "query_codex_params": {

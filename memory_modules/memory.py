@@ -99,16 +99,22 @@ class Memory(ABC):
         )
         return deepcopy(saved_config)
 
-    def set_query_context(self, **kwargs: object) -> None:
-        """Set thread-local context for the next query call."""
-        self._query_context_local.context = dict(kwargs)
+    def set_query_context(self, *, query_invocation_id: str) -> None:
+        """Set the opaque run-local identifier for the next query call."""
+        require(
+            isinstance(query_invocation_id, str) and query_invocation_id.strip(),
+            "query_invocation_id must be a non-empty string",
+        )
+        self._query_context_local.context = {
+            "query_invocation_id": query_invocation_id.strip(),
+        }
 
     def clear_query_context(self) -> None:
         """Clear thread-local query context for this worker thread."""
         if hasattr(self._query_context_local, "context"):
             delattr(self._query_context_local, "context")
 
-    def get_query_context(self) -> dict[str, object]:
+    def get_query_context(self) -> dict[str, str]:
         """Return thread-local query context for this worker thread."""
         context = getattr(self._query_context_local, "context", None)
         if isinstance(context, dict):

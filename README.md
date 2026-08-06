@@ -213,12 +213,13 @@ Text values must be non-empty strings. Image values must point to existing
 files. The harness appends these items to the reader prompt and enforces
 `--memory-context-max-tokens` before calling the answer model.
 
-The built-in `rag` and `agentrunbook_r` backends receive no benchmark metadata
-during `query`: retrieval is based only on the question text and optional
-question image. Other built-in backends may use `self.get_query_context()` for
-internal bookkeeping, but must not expose that context to retrieval or answer
-generation. Optional hooks include `post_query_hook(...)` for per-query metadata
-and `_save_backend(...)` / `_load_backend(...)` for persisted memory state.
+Backends receive no benchmark metadata during `query`: retrieval is based only
+on the question text and optional question image. `self.get_query_context()`
+contains only a random, run-local `query_invocation_id` for trace and lifecycle
+bookkeeping. The evaluator keeps the dataset question ID, question type, raw
+question record, gold answer, and evaluator configuration private. Optional
+hooks include `post_query_hook(...)` for per-query metadata and
+`_save_backend(...)` / `_load_backend(...)` for persisted memory state.
 
 To run a new backend directly, create a memory config JSON:
 

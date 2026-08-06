@@ -119,27 +119,6 @@ def load_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def question_text(question_field: Any) -> str:
-    if isinstance(question_field, str):
-        require(question_field.strip(), "Question text must be non-empty")
-        return question_field
-    require(isinstance(question_field, dict), "question must be string or object")
-    text = question_field.get("text")
-    require(isinstance(text, str) and text.strip(), "question.text must be non-empty")
-    return text
-
-
-def question_image(question_field: Any) -> str | None:
-    if isinstance(question_field, str):
-        return None
-    require(isinstance(question_field, dict), "question must be string or object")
-    image = question_field.get("image")
-    if image is None:
-        return None
-    require(isinstance(image, str) and image.strip(), "question.image must be a non-empty string")
-    return image
-
-
 def relative_symlink(src: Path, dst: Path) -> None:
     dst.parent.mkdir(parents=True, exist_ok=True)
     relative_target = os.path.relpath(src, start=dst.parent)
@@ -163,29 +142,6 @@ def ensure_string_list(value: Any, *, field_name: str) -> list[str]:
         )
         out.append(item)
     return out
-
-
-def load_question_index(path: Path) -> tuple[dict[str, dict[str, Any]], dict[str, str]]:
-    if path.suffix == ".jsonl":
-        data = [
-            json.loads(line)
-            for line in path.read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    else:
-        data = load_json(path)
-    require(isinstance(data, list), f"Expected list in questions file: {path}")
-    by_id: dict[str, dict[str, Any]] = {}
-    id_by_text: dict[str, str] = {}
-    for idx, item in enumerate(data):
-        require(isinstance(item, dict), f"Question item {idx} must be an object")
-        question_id = item.get("id")
-        require(isinstance(question_id, str) and question_id, f"Invalid question id at index {idx}")
-        require(question_id not in by_id, f"Duplicate question id in {path}: {question_id}")
-        text = question_text(item.get("question"))
-        by_id[question_id] = dict(item)
-        id_by_text.setdefault(text, question_id)
-    return by_id, id_by_text
 
 
 def copy_question_image(question_image_path: str, sandbox_dir: Path) -> str:
@@ -418,7 +374,6 @@ class CodexMemory(Memory):
     def __init__(self, memory_params: dict[str, object]) -> None:
         super().__init__(memory_params)
 
-        questions_path = memory_params.get("questions_path")
         evidence_mode = memory_params.get("evidence_mode", "both")
         codex_params_obj = memory_params.get("codex_params", {})
         workspace_dir = memory_params.get("workspace_dir")
@@ -426,10 +381,6 @@ class CodexMemory(Memory):
         trajectory_pool_root = memory_params.get("trajectory_pool_root")
         query_trace_dir = memory_params.get("query_trace_dir")
 
-        require(
-            isinstance(questions_path, str) and questions_path.strip(),
-            "codex questions_path must be a non-empty string",
-        )
         require(
             evidence_mode in {"axtree", "image", "both"},
             "codex evidence_mode must be one of: axtree, image, both",
@@ -487,8 +438,6 @@ class CodexMemory(Memory):
             "codex codex_params.require_evidence_gate must be a boolean",
         )
 
-        self.questions_path = Path(questions_path).resolve()
-        self.question_by_id, self.question_id_by_text = load_question_index(self.questions_path)
         self.evidence_mode = evidence_mode
         codex_binary_text = codex_binary_value.strip()
         resolved_binary = shutil.which(codex_binary_text) if os.sep not in codex_binary_text else None
@@ -549,7 +498,6 @@ class CodexMemory(Memory):
     @property
     def memory_config(self) -> MemoryConfig:
         memory_params: dict[str, object] = {
-            "questions_path": str(self.questions_path),
             "evidence_mode": self.evidence_mode,
             "codex_params": {
                 "binary": str(self.codex_binary),
@@ -658,33 +606,25 @@ class CodexMemory(Memory):
             self.query_trace_dir.mkdir(parents=True, exist_ok=True)
 
         query_context = self.get_query_context()
-        question_id_value = query_context.get("question_id")
-        if isinstance(question_id_value, str) and question_id_value.strip():
-            question_id = question_id_value
-        else:
-            question_id = self.question_id_by_text.get(query)
+        query_invocation_id = query_context.get("query_invocation_id")
         require(
-            isinstance(question_id, str) and question_id in self.question_by_id,
-            "codex could not resolve question id for query",
+            isinstance(query_invocation_id, str) and query_invocation_id.strip(),
+            "codex query requires an opaque query_invocation_id",
         )
-        question_item = self.question_by_id[question_id]
-        effective_query_image = query_image
-        if effective_query_image is None:
-            effective_query_image = question_image(question_item.get("question"))
 
         last_failure_state = "unknown_failure"
         last_failure_detail: str | None = None
         for attempt_number in range(1, self.codex_max_attempts + 1):
             self._raise_if_cancelled()
             attempt_result = self._run_query_attempt(
-                question_id=question_id,
-                question_item=question_item,
+                query_invocation_id=query_invocation_id,
                 query_text=query,
-                query_image=effective_query_image,
+                query_image=query_image,
             )
             if attempt_result["status"] == "interrupted":
                 raise KeyboardInterrupt(
-                    f"codex query interrupted for question_id={question_id}"
+                    "codex query interrupted for "
+                    f"query_invocation_id={query_invocation_id}"
                 )
             if attempt_result["success"]:
                 return attempt_result["memory_context"]
@@ -693,7 +633,7 @@ class CodexMemory(Memory):
             print(
                 (
                     "[codex] query attempt failed "
-                    f"question_id={question_id} "
+                    f"query_invocation_id={query_invocation_id} "
                     f"attempt={attempt_number}/{self.codex_max_attempts} "
                     f"status={attempt_result['status']} "
                     f"detail={attempt_result['detail'] or 'n/a'}"
@@ -705,7 +645,8 @@ class CodexMemory(Memory):
         print(
             (
                 "[codex] returning empty memory context after "
-                f"{self.codex_max_attempts} failed attempts for question_id={question_id} "
+                f"{self.codex_max_attempts} failed attempts for "
+                f"query_invocation_id={query_invocation_id} "
                 f"last_status={last_failure_state} "
                 f"last_detail={last_failure_detail or 'n/a'}"
             ),
@@ -778,38 +719,31 @@ class CodexMemory(Memory):
             },
         )
 
-    def _next_attempt_dir(self, question_id: str) -> tuple[int, Path]:
+    def _next_attempt_dir(self, query_invocation_id: str) -> tuple[int, Path]:
         require(
             self.query_trace_dir is not None,
             "codex query_trace_dir is not configured",
         )
         with self._attempt_dir_lock:
-            question_trace_dir = self.query_trace_dir / question_id
-            question_trace_dir.mkdir(parents=True, exist_ok=True)
+            invocation_trace_dir = self.query_trace_dir / query_invocation_id
+            invocation_trace_dir.mkdir(parents=True, exist_ok=True)
             existing = sorted(
                 path
-                for path in question_trace_dir.iterdir()
+                for path in invocation_trace_dir.iterdir()
                 if path.is_dir() and path.name.startswith("attempt_")
             )
             attempt_index = len(existing) + 1
-            attempt_dir = question_trace_dir / f"attempt_{attempt_index:03d}"
+            attempt_dir = invocation_trace_dir / f"attempt_{attempt_index:03d}"
             attempt_dir.mkdir(parents=True, exist_ok=False)
         return attempt_index, attempt_dir
 
     def _build_question_payload(
         self,
         *,
-        question_id: str,
-        question_item: dict[str, Any],
         query_text: str,
         query_image: str | None,
         sandbox_dir: Path,
     ) -> dict[str, Any]:
-        question_type = question_item.get("question_type")
-        require(
-            isinstance(question_type, str) and question_type.strip(),
-            f"Question type must be a non-empty string for {question_id}",
-        )
         payload: dict[str, Any] = {}
         if query_image is None:
             payload["question"] = query_text
@@ -970,8 +904,7 @@ class CodexMemory(Memory):
     def _run_query_attempt(
         self,
         *,
-        question_id: str,
-        question_item: dict[str, Any],
+        query_invocation_id: str,
         query_text: str,
         query_image: str | None,
     ) -> dict[str, Any]:
@@ -979,12 +912,10 @@ class CodexMemory(Memory):
             self.workspace_dir is not None,
             "codex workspace_dir is not configured",
         )
-        attempt_index, attempt_dir = self._next_attempt_dir(question_id)
+        attempt_index, attempt_dir = self._next_attempt_dir(query_invocation_id)
         sandbox_dir = attempt_dir / "sandbox"
         sandbox_dir.mkdir(parents=True, exist_ok=True)
         question_payload = self._build_question_payload(
-            question_id=question_id,
-            question_item=question_item,
             query_text=query_text,
             query_image=query_image,
             sandbox_dir=sandbox_dir,
@@ -1072,7 +1003,7 @@ class CodexMemory(Memory):
         )
         raw_output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else None
         summary: dict[str, Any] = {
-            "question_id": question_id,
+            "query_invocation_id": query_invocation_id,
             "attempt_index": attempt_index,
             "command": command,
             "started_at_utc": datetime.fromtimestamp(started_at_ts, timezone.utc).isoformat(),

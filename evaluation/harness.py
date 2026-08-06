@@ -13,6 +13,7 @@ import shutil
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -67,7 +68,6 @@ NONSHARED_PARALLEL_MEMORY_TYPES = {
     "agentrunbook_r",
     "rag",
 }
-QUERY_ONLY_MEMORY_TYPES = {"rag", "agentrunbook_r"}
 DOMAIN_SYSTEM_PROMPTS = {
     "web": (
         "You are an experienced colleague in a web browsing environment that has "
@@ -558,14 +558,9 @@ def build_prompt_row(
     memory_context_max_tokens: int,
 ) -> dict[str, Any]:
     qid = item["question_id"]
-    if memory.memory_type in QUERY_ONLY_MEMORY_TYPES:
-        memory.set_query_context()
-    else:
-        memory.set_query_context(
-            question_id=qid,
-            question_type=item["question_type"],
-            question_item=item["question_item"],
-        )
+    memory.set_query_context(
+        query_invocation_id=item["query_invocation_id"],
+    )
     try:
         query_started_at = time.perf_counter()
         memory_context = validate_memory_context_items(
@@ -612,13 +607,16 @@ def build_prompt_row(
     }
 
 
-def _latest_query_attempt_summary_path(query_trace_dir: Path, question_id: str) -> Path | None:
-    question_trace_dir = query_trace_dir / question_id
-    if not question_trace_dir.exists():
+def _latest_query_attempt_summary_path(
+    query_trace_dir: Path,
+    query_invocation_id: str,
+) -> Path | None:
+    invocation_trace_dir = query_trace_dir / query_invocation_id
+    if not invocation_trace_dir.exists():
         return None
     attempt_dirs = sorted(
         path
-        for path in question_trace_dir.iterdir()
+        for path in invocation_trace_dir.iterdir()
         if path.is_dir() and path.name.startswith("attempt_")
     )
     for attempt_dir in reversed(attempt_dirs):
@@ -716,9 +714,12 @@ def compact_nonshared_memory_workspace(
     *,
     workspace_dir: Path,
     query_trace_dir: Path,
-    question_id: str,
+    query_invocation_id: str,
 ) -> None:
-    summary_path = _latest_query_attempt_summary_path(query_trace_dir, question_id)
+    summary_path = _latest_query_attempt_summary_path(
+        query_trace_dir,
+        query_invocation_id,
+    )
     if summary_path is None:
         return None
     summary_payload = json.loads(summary_path.read_text(encoding="utf-8"))
@@ -812,7 +813,7 @@ def build_prompt_row_with_per_question_memory(
         compact_nonshared_memory_workspace(
             workspace_dir=workspace_dir,
             query_trace_dir=query_trace_dir,
-            question_id=item["question_id"],
+            query_invocation_id=item["query_invocation_id"],
         )
     total_elapsed = time.perf_counter() - worker_started_at
     print(
@@ -1140,6 +1141,7 @@ def main() -> None:
                 "index": idx,
                 "question_item": question_item,
                 "question_id": qid,
+                "query_invocation_id": uuid.uuid4().hex,
                 "question_type": qtype,
                 "category": category_from_question_type(qtype),
                 "eval_function": q_eval_spec,
@@ -1290,7 +1292,7 @@ def main() -> None:
                             memory_config=memory_config,
                             trajectories=trajectories,
                             trajectories_path=args.trajectories_path,
-                            workspace_dir=memory_workspace_root / item["question_id"],
+                            workspace_dir=memory_workspace_root / item["query_invocation_id"],
                             query_trace_dir=query_trace_dir,
                             system_prompt=system_prompt,
                             memory_context_max_tokens=args.memory_context_max_tokens,
@@ -1334,7 +1336,7 @@ def main() -> None:
                             memory_config=memory_config,
                             trajectories=trajectories,
                             trajectories_path=args.trajectories_path,
-                            workspace_dir=memory_workspace_root / qid,
+                            workspace_dir=memory_workspace_root / item["query_invocation_id"],
                             query_trace_dir=output_dir / "query_traces",
                             system_prompt=system_prompt,
                             memory_context_max_tokens=args.memory_context_max_tokens,

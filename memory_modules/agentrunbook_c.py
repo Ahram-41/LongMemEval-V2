@@ -85,7 +85,6 @@ class AgentRunbookC(CodexMemory):
     @property
     def memory_config(self) -> MemoryConfig:
         memory_params: dict[str, object] = {
-            "questions_path": str(self.questions_path),
             "evidence_mode": self.evidence_mode,
             "query_codex_params": {
                 "binary": str(self.codex_binary),
@@ -111,26 +110,6 @@ class AgentRunbookC(CodexMemory):
         target = scripts_dir / "inspect_trajectory.py"
         target.write_text(self.trajectory_inspector_path.read_text(encoding="utf-8"), encoding="utf-8")
         return [target.name]
-
-    def _build_question_payload(
-        self,
-        *,
-        question_id: str,
-        question_item: dict[str, Any],
-        query_text: str,
-        query_image: str | None,
-        sandbox_dir: Path,
-    ) -> dict[str, Any]:
-        payload = super()._build_question_payload(
-            question_id=question_id,
-            question_item=question_item,
-            query_text=query_text,
-            query_image=query_image,
-            sandbox_dir=sandbox_dir,
-        )
-        payload.pop("question_id", None)
-        payload.pop("question_type", None)
-        return payload
 
     def _ensure_trajectory_summary(
         self,
@@ -225,8 +204,7 @@ class AgentRunbookC(CodexMemory):
     def _run_query_attempt(
         self,
         *,
-        question_id: str,
-        question_item: dict[str, Any],
+        query_invocation_id: str,
         query_text: str,
         query_image: str | None,
     ) -> dict[str, Any]:
@@ -234,13 +212,11 @@ class AgentRunbookC(CodexMemory):
             self.workspace_dir is not None,
             "agentrunbook_c workspace_dir is not configured",
         )
-        attempt_index, attempt_dir = self._next_attempt_dir(question_id)
+        attempt_index, attempt_dir = self._next_attempt_dir(query_invocation_id)
         sandbox_dir = attempt_dir / "sandbox"
         sandbox_dir.mkdir(parents=True, exist_ok=True)
 
         question_payload = self._build_question_payload(
-            question_id=question_id,
-            question_item=question_item,
             query_text=query_text,
             query_image=query_image,
             sandbox_dir=sandbox_dir,
@@ -250,7 +226,7 @@ class AgentRunbookC(CodexMemory):
         summary_result = self._ensure_trajectory_summary(attempt_dir=attempt_dir)
         if not summary_result["success"]:
             summary: dict[str, Any] = {
-                "question_id": question_id,
+                "query_invocation_id": query_invocation_id,
                 "attempt_index": attempt_index,
                 "completed_at_utc": utc_now_iso(),
                 "question_has_image": query_image is not None,
@@ -344,7 +320,7 @@ class AgentRunbookC(CodexMemory):
         )
         raw_output_text = output_path.read_text(encoding="utf-8") if output_path.exists() else None
         summary: dict[str, Any] = {
-            "question_id": question_id,
+            "query_invocation_id": query_invocation_id,
             "attempt_index": attempt_index,
             "started_at_utc": datetime.fromtimestamp(started_at_ts, timezone.utc).isoformat(),
             "completed_at_utc": utc_now_iso(),

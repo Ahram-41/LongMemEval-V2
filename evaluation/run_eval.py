@@ -238,7 +238,6 @@ def build_memory_config(args: argparse.Namespace, data_root: Path) -> dict[str, 
         return {
             "memory_type": "codex",
             "memory_params": {
-                "questions_path": str((data_root / "questions.jsonl").resolve()),
                 "evidence_mode": "both",
                 "trajectory_pool_root": None,
                 "codex_params": codex_params,
@@ -246,7 +245,6 @@ def build_memory_config(args: argparse.Namespace, data_root: Path) -> dict[str, 
         }
     if args.method == "agentrunbook_c_v2":
         memory_params: dict[str, object] = {
-            "questions_path": str((data_root / "questions.jsonl").resolve()),
             "evidence_mode": "both",
             "trajectory_pool_root": None,
             "query_openai_sdk_params": openai_sdk_query_params(args),
@@ -265,7 +263,6 @@ def build_memory_config(args: argparse.Namespace, data_root: Path) -> dict[str, 
     return {
         "memory_type": "agentrunbook_c",
         "memory_params": {
-            "questions_path": str((data_root / "questions.jsonl").resolve()),
             "evidence_mode": "both",
             "trajectory_pool_root": None,
             "query_codex_params": codex_params,
