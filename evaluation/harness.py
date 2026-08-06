@@ -67,6 +67,7 @@ NONSHARED_PARALLEL_MEMORY_TYPES = {
     "agentrunbook_r",
     "rag",
 }
+QUERY_ONLY_MEMORY_TYPES = {"rag", "agentrunbook_r"}
 DOMAIN_SYSTEM_PROMPTS = {
     "web": (
         "You are an experienced colleague in a web browsing environment that has "
@@ -557,11 +558,14 @@ def build_prompt_row(
     memory_context_max_tokens: int,
 ) -> dict[str, Any]:
     qid = item["question_id"]
-    memory.set_query_context(
-        question_id=qid,
-        question_type=item["question_type"],
-        question_item=item["question_item"],
-    )
+    if memory.memory_type in QUERY_ONLY_MEMORY_TYPES:
+        memory.set_query_context()
+    else:
+        memory.set_query_context(
+            question_id=qid,
+            question_type=item["question_type"],
+            question_item=item["question_item"],
+        )
     try:
         query_started_at = time.perf_counter()
         memory_context = validate_memory_context_items(

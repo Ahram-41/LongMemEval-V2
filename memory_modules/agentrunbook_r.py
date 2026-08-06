@@ -1336,12 +1336,8 @@ class AgentRunbookR(Memory):
         query: str,
         query_image: str | None,
     ) -> dict[str, Any]:
-        query_context = self.get_query_context()
-        messages = self._build_query_generation_messages(
-            query=query,
-            query_image=query_image,
-            query_context=query_context,
-        )
+        _ = query_image
+        messages = self._build_query_generation_messages(query=query)
         raw_text = self._call_controller_text(
             messages,
             disable_thinking=self.query_generation_disable_thinking,
@@ -1359,21 +1355,13 @@ class AgentRunbookR(Memory):
                     max_raw_state_queries=self.max_raw_state_queries,
                 )
             except Exception:
-                return self._fallback_query_bundle(
-                    query=query,
-                    question_type=self._question_type_from_context(query_context),
-                )
+                return self._fallback_query_bundle(query=query)
 
     def _build_query_generation_messages(
         self,
         *,
         query: str,
-        query_image: str | None,
-        query_context: dict[str, object],
     ) -> list[dict[str, Any]]:
-        question_id = self._question_id_from_context(query_context)
-        question_type = self._question_type_from_context(query_context)
-        original_goals = self._question_original_goals_from_context(query_context)
         summary_text = self._runtime_query_summary or self._render_runtime_query_summary()
         user_text = "\n\n".join(
             [
@@ -1384,11 +1372,7 @@ class AgentRunbookR(Memory):
                 "Prompt examples:",
                 QUERY_GENERATION_EXAMPLES,
                 "Question to rewrite into retrieval queries:",
-                f"Question ID: {question_id}",
-                f"Question type: {question_type}",
                 f"Question text: {query}",
-                f"Question image path: {query_image or '<none>'}",
-                f"Original goals attached to this benchmark question: {json.dumps(original_goals, ensure_ascii=True)}",
                 "Return only the JSON object.",
             ]
         )
@@ -1403,81 +1387,14 @@ class AgentRunbookR(Memory):
             {"role": "user", "content": draft_response},
         ]
 
-    def _fallback_query_bundle(self, *, query: str, question_type: str) -> dict[str, Any]:
+    def _fallback_query_bundle(self, *, query: str) -> dict[str, Any]:
         normalized = _normalize_text(query)
         raw_queries = [normalized] if normalized else []
-        if question_type.startswith("procedure"):
-            return {
-                "raw_state_queries": raw_queries[:1],
-                "event_query": "",
-                "note_query": normalized,
-            }
-        if question_type.startswith("dynamic"):
-            return {
-                "raw_state_queries": raw_queries[:1],
-                "event_query": normalized,
-                "note_query": "",
-            }
         return {
             "raw_state_queries": raw_queries[:1],
-            "event_query": "",
-            "note_query": "",
+            "event_query": normalized,
+            "note_query": normalized,
         }
-
-    def _question_id_from_context(self, query_context: dict[str, object]) -> str:
-        question_id = query_context.get("question_id")
-        if isinstance(question_id, str) and question_id.strip():
-            return question_id.strip()
-        question_item = query_context.get("question_item")
-        if isinstance(question_item, dict):
-            value = question_item.get("id")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return "<unknown>"
-
-    def _question_type_from_context(self, query_context: dict[str, object]) -> str:
-        question_type = query_context.get("question_type")
-        if isinstance(question_type, str) and question_type.strip():
-            return question_type.strip()
-        question_item = query_context.get("question_item")
-        if isinstance(question_item, dict):
-            value = question_item.get("question_type")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return "<unknown>"
-
-    def _question_original_goals_from_context(self, query_context: dict[str, object]) -> list[str]:
-        question_item = query_context.get("question_item")
-        if not isinstance(question_item, dict):
-            return []
-        candidates: list[Any] = [
-            question_item.get("original_goal"),
-            question_item.get("original_goals"),
-        ]
-        metadata = question_item.get("metadata")
-        if isinstance(metadata, dict):
-            candidates.extend(
-                [
-                    metadata.get("original_goal"),
-                    metadata.get("original_goals"),
-                ]
-            )
-        values: list[str] = []
-        for candidate in candidates:
-            if isinstance(candidate, str) and candidate.strip():
-                values.append(_normalize_text(candidate))
-            elif isinstance(candidate, list):
-                for item in candidate:
-                    if isinstance(item, str) and item.strip():
-                        values.append(_normalize_text(item))
-        deduped: list[str] = []
-        seen: set[str] = set()
-        for value in values:
-            if value in seen:
-                continue
-            seen.add(value)
-            deduped.append(value)
-        return deduped
 
     def _search_entries(
         self,

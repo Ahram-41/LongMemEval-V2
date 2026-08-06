@@ -213,10 +213,12 @@ Text values must be non-empty strings. Image values must point to existing
 files. The harness appends these items to the reader prompt and enforces
 `--memory-context-max-tokens` before calling the answer model.
 
-During `query`, the backend can call `self.get_query_context()` to access
-`question_id`, `question_type`, and the raw question item. Optional hooks include
-`post_query_hook(...)` for per-query metadata and `_save_backend(...)` /
-`_load_backend(...)` for persisted memory state.
+The built-in `rag` and `agentrunbook_r` backends receive no benchmark metadata
+during `query`: retrieval is based only on the question text and optional
+question image. Other built-in backends may use `self.get_query_context()` for
+internal bookkeeping, but must not expose that context to retrieval or answer
+generation. Optional hooks include `post_query_hook(...)` for per-query metadata
+and `_save_backend(...)` / `_load_backend(...)` for persisted memory state.
 
 To run a new backend directly, create a memory config JSON:
 
