@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -p gpu-long --gpus=h100-96:1 -c 16 --mem=96G --time=2-23:00:00
-#SBATCH -J e1-rag-notes -o %x.%j.log
+#SBATCH -J e1-baseline -o %x.%j.log
 #SBATCH --signal=B:TERM@180
 # Resumable RAG slice+notes baseline on LME-V2 Small. Re-submit the same script to resume;
 # on SIGTERM (time limit) it resubmits itself. Override: LIMIT=5 for a smoke test,
@@ -8,7 +8,8 @@
 set -uo pipefail
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2
 export E1
-RUN_TAG=${RUN_TAG:-rag_notes_small}
+METHOD=${METHOD:-agentrunbook_r}
+RUN_TAG=${RUN_TAG:-${METHOD}_small}
 DOMAINS=${DOMAINS:-"web enterprise"}
 LIMIT=${LIMIT:-}
 SMOKE_TRAJ=${SMOKE_TRAJ:-}
@@ -38,7 +39,7 @@ status=0
 for d in $DOMAINS; do
   out=$E1/runs/${RUN_TAG}${LIMIT:+_limit$LIMIT}${SMOKE_TRAJ:+_traj$SMOKE_TRAJ}/${d}_small
   "$LME_PY" e1/run_e1.py --index-root "$E1/index" \
-     --method rag_query_to_slice_notes --domain "$d" --tier small \
+     --method "$METHOD" --domain "$d" --tier small \
      --data-root "$DATA_ROOT" --output-dir "$out" \
      --reader-max-concurrent-requests ${READER_MAX_SEQS:-8} --prompt-build-max-workers 8 \
      ${LIMIT:+--limit $LIMIT} ${SMOKE_TRAJ:+--smoke-trajectories $SMOKE_TRAJ} &
