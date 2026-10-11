@@ -5,7 +5,7 @@ set -u
 E1=${E1:-$HOME/e1}
 LOGDIR=${LOGDIR:-$E1/logs}; mkdir -p "$LOGDIR"
 export HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1 VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
-READER_MAX_LEN=${READER_MAX_LEN:-65536}
+READER_MAX_LEN=${READER_MAX_LEN:-262144}   # official protocol: 200k context + 20k output
 VLLM_PY=$E1/miniforge3/envs/vllm/bin
 export PATH="$VLLM_PY:/usr/local/cuda/bin:$PATH" CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}   # ninja + nvcc for flashinfer JIT
 TAG=${SLURM_JOB_ID:-local}
@@ -32,7 +32,7 @@ wait_healthy 8114 "$EMBED_PID" embedding || return 1
 "$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
   --dtype bfloat16 --max-model-len "$READER_MAX_LEN" \
   --gpu-memory-utilization ${READER_MEM_FRAC:-0.62} \
-  --max-num-seqs ${READER_MAX_SEQS:-16} --enable-prefix-caching \
+  --max-num-seqs ${READER_MAX_SEQS:-8} --enable-prefix-caching \
   --reasoning-parser ${REASONING_PARSER:-qwen3} \
   > "$LOGDIR/reader.$TAG.log" 2>&1 &
 READER_PID=$!

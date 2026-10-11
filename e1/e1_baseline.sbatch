@@ -40,7 +40,7 @@ for d in $DOMAINS; do
   "$LME_PY" e1/run_e1.py --index-root "$E1/index" \
      --method rag_query_to_slice_notes --domain "$d" --tier small \
      --data-root "$DATA_ROOT" --output-dir "$out" \
-     --reader-max-concurrent-requests ${READER_MAX_SEQS:-16} --prompt-build-max-workers 8 \
+     --reader-max-concurrent-requests ${READER_MAX_SEQS:-8} --prompt-build-max-workers 8 \
      ${LIMIT:+--limit $LIMIT} ${SMOKE_TRAJ:+--smoke-trajectories $SMOKE_TRAJ} &
   wait $!   # 'wait' (not foreground exec) so the TERM trap can fire
   rc=$?; [ $rc -ne 0 ] && { echo "[sbatch] domain $d failed rc=$rc"; status=$rc; }
