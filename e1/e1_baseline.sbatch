@@ -20,7 +20,13 @@ export DATA_ROOT=$E1/data/longmemeval-v2 HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1
 export PYTHONNOUSERSITE=1
 LME_PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 
-resubmit() { echo "[sbatch] signal received, resubmitting"; cd "$E1" && sbatch --export=ALL "$REPO/e1/e1_baseline.sbatch"; kill ${READER_PID:-0} ${EMBED_PID:-0} 2>/dev/null; exit 0; }
+RESUBMIT_COUNT=${RESUBMIT_COUNT:-0}; RESUBMIT_MAX=${RESUBMIT_MAX:-3}
+resubmit() {
+  kill ${READER_PID:-0} ${EMBED_PID:-0} 2>/dev/null
+  if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[sbatch] resubmit cap $RESUBMIT_MAX reached; NOT resubmitting"; exit 1; fi
+  echo "[sbatch] time limit, resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
+  cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL "$REPO/e1/e1_baseline.sbatch"; exit 0
+}
 trap resubmit TERM
 
 source "$REPO/e1/serve_vllm.sh" || { echo "[sbatch] vLLM failed to start"; exit 1; }
