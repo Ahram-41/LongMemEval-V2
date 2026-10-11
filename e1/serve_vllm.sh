@@ -7,6 +7,7 @@ LOGDIR=${LOGDIR:-$E1/logs}; mkdir -p "$LOGDIR"
 export HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1 VLLM_LOGGING_LEVEL=${VLLM_LOGGING_LEVEL:-INFO}
 READER_MAX_LEN=${READER_MAX_LEN:-65536}
 VLLM_PY=$E1/miniforge3/envs/vllm/bin
+export PATH="$VLLM_PY:/usr/local/cuda/bin:$PATH" CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}   # ninja + nvcc for flashinfer JIT
 TAG=${SLURM_JOB_ID:-local}
 
 wait_healthy() {  # port, pid, name
