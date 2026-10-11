@@ -1,0 +1,48 @@
+#!/bin/bash
+#SBATCH -p gpu-long --gpus=h100-96:1 -c 16 --mem=96G --time=2-23:00:00
+#SBATCH -J e1-rag-notes -o %x.%j.log
+#SBATCH --signal=B:TERM@180
+# Resumable RAG slice+notes baseline on LME-V2 Small. Re-submit the same script to resume;
+# on SIGTERM (time limit) it resubmits itself. Override: LIMIT=5 for a smoke test,
+# DOMAINS="web enterprise", RUN_TAG=..., READER_MAX_LEN=65536.
+set -uo pipefail
+E1=$HOME/e1; REPO=$E1/LongMemEval-V2
+export E1
+RUN_TAG=${RUN_TAG:-rag_notes_small}
+DOMAINS=${DOMAINS:-"web enterprise"}
+LIMIT=${LIMIT:-}
+[ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a   # OPENAI_API_KEY for the judge
+export OPENAI_API_KEY=${OPENAI_API_KEY:-EMPTY}
+export READER_BASE_URL=http://localhost:8023/v1 READER_MODEL=Qwen/Qwen3.5-9B
+export LME_CONTROLLER_BASE_URL=http://localhost:8023/v1 LME_CONTROLLER_MODEL=Qwen/Qwen3.5-9B
+export LME_EMBEDDING_BASE_URL=http://localhost:8114/v1 LME_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
+export DATA_ROOT=$E1/data/longmemeval-v2 HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1
+export PYTHONNOUSERSITE=1
+LME_PY=$E1/miniforge3/envs/lme-v2-release/bin/python
+
+resubmit() { echo "[sbatch] signal received, resubmitting"; cd "$E1" && sbatch --export=ALL "$REPO/e1/e1_baseline.sbatch"; kill ${READER_PID:-0} ${EMBED_PID:-0} 2>/dev/null; exit 0; }
+trap resubmit TERM
+
+source "$REPO/e1/serve_vllm.sh" || { echo "[sbatch] vLLM failed to start"; exit 1; }
+nvidia-smi --query-gpu=memory.used,memory.total --format=csv
+
+cd "$REPO"
+status=0
+for d in $DOMAINS; do
+  out=$E1/runs/${RUN_TAG}${LIMIT:+_limit$LIMIT}/${d}_small
+  "$LME_PY" e1/run_e1.py --index-root "$E1/index" \
+     --method rag_query_to_slice_notes --domain "$d" --tier small \
+     --data-root "$DATA_ROOT" --output-dir "$out" \
+     --reader-max-concurrent-requests ${READER_MAX_SEQS:-16} --prompt-build-max-workers 8 \
+     ${LIMIT:+--limit $LIMIT} &
+  wait $!   # 'wait' (not foreground exec) so the TERM trap can fire
+  rc=$?; [ $rc -ne 0 ] && { echo "[sbatch] domain $d failed rc=$rc"; status=$rc; }
+done
+if [ "$status" -eq 0 ] && [ -z "$LIMIT" ]; then
+  "$LME_PY" leaderboard/combine_aggregated_metrics.py \
+     "$E1/runs/$RUN_TAG/enterprise_small/aggregated_metrics.json" \
+     "$E1/runs/$RUN_TAG/web_small/aggregated_metrics.json" \
+     -o "$E1/runs/$RUN_TAG/combined_metrics.json" && cat "$E1/runs/$RUN_TAG/combined_metrics.json"
+fi
+kill $READER_PID $EMBED_PID 2>/dev/null
+exit $status
