@@ -9,7 +9,7 @@ READER_MAX_LEN=${READER_MAX_LEN:-65536}
 VLLM_PY=$E1/miniforge3/envs/vllm/bin
 TAG=${SLURM_JOB_ID:-local}
 
-"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --task embed --port 8114 \
+"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
   --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.22 \
   --disable-log-requests > "$LOGDIR/embed.$TAG.log" 2>&1 &
 EMBED_PID=$!
