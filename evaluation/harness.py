@@ -938,12 +938,36 @@ async def generate_all_reader_outputs(
             "usage": usage,
         }
 
-    tasks = [asyncio.create_task(run_one(row)) for row in prompt_rows]
+    # E1 checkpoint: cache reader outputs per question so an interrupted run
+    # (e.g. Slurm time limit) resumes without re-querying finished questions.
+    cache_path = Path(args.output_dir) / "reader_outputs_cache.jsonl"
     outputs: dict[str, dict[str, Any]] = {}
-    with tqdm(total=len(tasks), desc="Generating", unit="q") as progress:
+    wanted_ids = {row["question_id"] for row in prompt_rows}
+    if cache_path.exists():
+        with cache_path.open("r", encoding="utf-8") as fp:
+            for line in fp:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    cached = json.loads(line)
+                except json.JSONDecodeError:
+                    continue  # truncated trailing line from a killed job
+                qid = cached.get("question_id")
+                if qid in wanted_ids and isinstance(cached.get("output"), dict):
+                    outputs[qid] = cached["output"]
+        print(f"Resuming: {len(outputs)}/{len(prompt_rows)} reader outputs loaded from {cache_path}", flush=True)
+    pending_rows = [row for row in prompt_rows if row["question_id"] not in outputs]
+
+    tasks = [asyncio.create_task(run_one(row)) for row in pending_rows]
+    with cache_path.open("a", encoding="utf-8") as cache_fp, tqdm(
+        total=len(tasks), desc="Generating", unit="q"
+    ) as progress:
         for task in asyncio.as_completed(tasks):
             question_id, output = await task
             outputs[question_id] = output
+            cache_fp.write(json.dumps({"question_id": question_id, "output": output}, ensure_ascii=True) + "\n")
+            cache_fp.flush()
             progress.update(1)
 
     await client.close()
