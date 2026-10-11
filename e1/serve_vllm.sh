@@ -9,19 +9,6 @@ READER_MAX_LEN=${READER_MAX_LEN:-65536}
 VLLM_PY=$E1/miniforge3/envs/vllm/bin
 TAG=${SLURM_JOB_ID:-local}
 
-"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
-  --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.22 \
-  > "$LOGDIR/embed.$TAG.log" 2>&1 &
-EMBED_PID=$!
-
-"$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
-  --dtype bfloat16 --max-model-len "$READER_MAX_LEN" --gpu-memory-utilization 0.70 \
-  --max-num-seqs ${READER_MAX_SEQS:-16} --enable-prefix-caching \
-  --reasoning-parser ${REASONING_PARSER:-qwen3} \
-  > "$LOGDIR/reader.$TAG.log" 2>&1 &
-READER_PID=$!
-export EMBED_PID READER_PID
-
 wait_healthy() {  # port, pid, name
   local t=0
   until curl -sf "http://localhost:$1/health" >/dev/null; do
@@ -30,4 +17,23 @@ wait_healthy() {  # port, pid, name
   done
   echo "[serve] $3 healthy on :$1 after ${t}s"
 }
-wait_healthy 8114 "$EMBED_PID" embedding && wait_healthy 8023 "$READER_PID" reader
+
+# Start sequentially: each vLLM instance profiles free memory at startup, so two
+# concurrent starts on one GPU under-count each other and fail KV allocation.
+"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
+  --dtype bfloat16 --max-model-len 8192 --max-num-seqs 32 \
+  --gpu-memory-utilization ${EMBED_MEM_FRAC:-0.30} \
+  > "$LOGDIR/embed.$TAG.log" 2>&1 &
+EMBED_PID=$!
+export EMBED_PID
+wait_healthy 8114 "$EMBED_PID" embedding || return 1
+
+"$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
+  --dtype bfloat16 --max-model-len "$READER_MAX_LEN" \
+  --gpu-memory-utilization ${READER_MEM_FRAC:-0.62} \
+  --max-num-seqs ${READER_MAX_SEQS:-16} --enable-prefix-caching \
+  --reasoning-parser ${REASONING_PARSER:-qwen3} \
+  > "$LOGDIR/reader.$TAG.log" 2>&1 &
+READER_PID=$!
+export READER_PID
+wait_healthy 8023 "$READER_PID" reader
