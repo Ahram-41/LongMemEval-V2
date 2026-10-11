@@ -11,14 +11,14 @@ TAG=${SLURM_JOB_ID:-local}
 
 "$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
   --dtype bfloat16 --max-model-len 8192 --gpu-memory-utilization 0.22 \
-  --disable-log-requests > "$LOGDIR/embed.$TAG.log" 2>&1 &
+  > "$LOGDIR/embed.$TAG.log" 2>&1 &
 EMBED_PID=$!
 
 "$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
   --dtype bfloat16 --max-model-len "$READER_MAX_LEN" --gpu-memory-utilization 0.70 \
   --max-num-seqs ${READER_MAX_SEQS:-16} --enable-prefix-caching \
   --reasoning-parser ${REASONING_PARSER:-qwen3} \
-  --disable-log-requests > "$LOGDIR/reader.$TAG.log" 2>&1 &
+  > "$LOGDIR/reader.$TAG.log" 2>&1 &
 READER_PID=$!
 export EMBED_PID READER_PID
 
