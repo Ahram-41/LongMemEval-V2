@@ -43,6 +43,8 @@ def main() -> None:
     ap.add_argument("--index-root", required=True, help="Directory holding reusable memory indexes")
     ap.add_argument("--rebuild-index", action="store_true")
     ap.add_argument("--index-only", action="store_true", help="Build the index and stop")
+    ap.add_argument("--smoke-trajectories", type=int, default=None,
+                    help="Smoke test: keep only the first N trajectory ids of the haystack (index stored under a separate name)")
     own, passthrough = ap.parse_known_args()
 
     # Reuse run_eval's argparse so every official default/env var applies.
@@ -67,12 +69,19 @@ def main() -> None:
         data_root=data_root, tier=args.tier, selected_questions=selected,
         output_path=runtime_dir / "haystack.json",
     )
+    if own.smoke_trajectories:
+        hs_path = runtime_dir / "haystack.json"
+        hs = json.loads(hs_path.read_text())
+        hs = {q: ids[: own.smoke_trajectories] for q, ids in hs.items()}
+        hs_path.write_text(json.dumps(hs, indent=2) + "\n")
+        log(f"SMOKE: haystack truncated to {own.smoke_trajectories} trajectories per question")
     memory_config = RE.build_memory_config(args, data_root)
     RE.write_json(runtime_dir / "memory_config.json", memory_config)
     log(f"{len(selected)} questions, method={args.method} domain={args.domain} tier={args.tier}")
 
     # ---- Phase A: shared index -------------------------------------------------
-    index_dir = Path(own.index_root).expanduser().resolve() / f"{args.method}_{args.domain}_{args.tier}"
+    index_name = f"{args.method}_{args.domain}_{args.tier}" + (f"_smoke{own.smoke_trajectories}" if own.smoke_trajectories else "")
+    index_dir = Path(own.index_root).expanduser().resolve() / index_name
     memory_state = index_dir / "memory_state"
     complete = (memory_state / "index.json").exists() and (memory_state / "memory_config.json").exists()
     if own.rebuild_index and index_dir.exists():

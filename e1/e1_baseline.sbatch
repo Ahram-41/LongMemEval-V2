@@ -11,6 +11,7 @@ export E1
 RUN_TAG=${RUN_TAG:-rag_notes_small}
 DOMAINS=${DOMAINS:-"web enterprise"}
 LIMIT=${LIMIT:-}
+SMOKE_TRAJ=${SMOKE_TRAJ:-}
 [ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a   # OPENAI_API_KEY for the judge
 export OPENAI_API_KEY=${OPENAI_API_KEY:-EMPTY}
 export READER_BASE_URL=http://localhost:8023/v1 READER_MODEL=Qwen/Qwen3.5-9B
@@ -35,12 +36,12 @@ nvidia-smi --query-gpu=memory.used,memory.total --format=csv
 cd "$REPO"
 status=0
 for d in $DOMAINS; do
-  out=$E1/runs/${RUN_TAG}${LIMIT:+_limit$LIMIT}/${d}_small
+  out=$E1/runs/${RUN_TAG}${LIMIT:+_limit$LIMIT}${SMOKE_TRAJ:+_traj$SMOKE_TRAJ}/${d}_small
   "$LME_PY" e1/run_e1.py --index-root "$E1/index" \
      --method rag_query_to_slice_notes --domain "$d" --tier small \
      --data-root "$DATA_ROOT" --output-dir "$out" \
      --reader-max-concurrent-requests ${READER_MAX_SEQS:-16} --prompt-build-max-workers 8 \
-     ${LIMIT:+--limit $LIMIT} &
+     ${LIMIT:+--limit $LIMIT} ${SMOKE_TRAJ:+--smoke-trajectories $SMOKE_TRAJ} &
   wait $!   # 'wait' (not foreground exec) so the TERM trap can fire
   rc=$?; [ $rc -ne 0 ] && { echo "[sbatch] domain $d failed rc=$rc"; status=$rc; }
 done
