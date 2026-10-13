@@ -1260,128 +1260,144 @@ def main() -> None:
     system_prompt = get_system_prompt(args.domain)
 
     # pass 1: build prompts for all questions
-    with prompt_build_interrupt_context(prompt_build_cancel_event):
-        if shared_memory is not None and args.prompt_build_max_workers > 1:
-            print(
-                "Building prompts in parallel across shared memory with "
-                f"{args.prompt_build_max_workers} workers."
-            )
-            with ThreadPoolExecutor(max_workers=args.prompt_build_max_workers) as executor:
-                try:
-                    future_to_item = {
-                        executor.submit(
-                            build_prompt_row,
-                            item,
-                            haystack_ids=haystack_mapping[item["question_id"]],
-                            memory=shared_memory,
-                            system_prompt=system_prompt,
-                            memory_context_max_tokens=args.memory_context_max_tokens,
-                        ): item
-                        for item in prepared_questions
-                    }
-                    for future in tqdm(as_completed(future_to_item), total=len(future_to_item), desc="Building prompts", unit="q"):
-                        item = future_to_item[future]
-                        try:
-                            prompt_rows.append(future.result())
-                        except KeyboardInterrupt:
-                            prompt_build_cancel_event.set()
-                            raise
-                        except Exception as exc:
-                            raise RuntimeError(
-                                f"Prompt building failed for question {item['question_id']}"
-                            ) from exc
-                except KeyboardInterrupt:
-                    prompt_build_cancel_event.set()
-                    raise
-            prompt_rows.sort(key=lambda row: row["stream_index"])
-        elif (
-            shared_memory is None
-            and args.prompt_build_max_workers > 1
-            and supports_nonshared_parallel
-        ):
-            require(memory_config is not None, "Missing memory config for per-question memory construction")
-            require(trajectories is not None, "Missing trajectories for per-question memory construction")
-            print(
-                "Building prompts in parallel across non-shared per-question memory with "
-                f"{args.prompt_build_max_workers} workers."
-            )
-            query_trace_dir = output_dir / "query_traces"
-            with ThreadPoolExecutor(max_workers=args.prompt_build_max_workers) as executor:
-                try:
-                    future_to_item = {
-                        executor.submit(
-                            build_prompt_row_with_per_question_memory,
-                            item,
-                            haystack_ids=haystack_mapping[item["question_id"]],
-                            memory_config=memory_config,
-                            trajectories=trajectories,
-                            trajectories_path=args.trajectories_path,
-                            workspace_dir=memory_workspace_root / item["query_invocation_id"],
-                            query_trace_dir=query_trace_dir,
-                            system_prompt=system_prompt,
-                            memory_context_max_tokens=args.memory_context_max_tokens,
-                            reader_temperature=args.temperature,
-                            reader_top_p=args.top_p,
-                            cancel_event=prompt_build_cancel_event,
-                        ): item
-                        for item in prepared_questions
-                    }
-                    for future in tqdm(
-                        as_completed(future_to_item),
-                        total=len(future_to_item),
-                        desc="Building prompts",
-                        unit="q",
-                    ):
-                        item = future_to_item[future]
-                        try:
-                            prompt_rows.append(future.result())
-                        except KeyboardInterrupt:
-                            prompt_build_cancel_event.set()
-                            raise
-                        except Exception as exc:
-                            raise RuntimeError(
-                                f"Prompt building failed for question {item['question_id']}"
-                            ) from exc
-                except KeyboardInterrupt:
-                    prompt_build_cancel_event.set()
-                    raise
-            prompt_rows.sort(key=lambda row: row["stream_index"])
-        else:
-            for item in tqdm(prepared_questions, desc="Building prompts", unit="q"):
-                qid = item["question_id"]
-                haystack_ids = haystack_mapping[qid]
-                if shared_memory is None:
-                    require(memory_config is not None, "Missing memory config for per-question memory construction")
-                    require(trajectories is not None, "Missing trajectories for per-question memory construction")
-                    prompt_rows.append(
-                        build_prompt_row_with_per_question_memory(
-                            item,
-                            haystack_ids=haystack_ids,
-                            memory_config=memory_config,
-                            trajectories=trajectories,
-                            trajectories_path=args.trajectories_path,
-                            workspace_dir=memory_workspace_root / item["query_invocation_id"],
-                            query_trace_dir=output_dir / "query_traces",
-                            system_prompt=system_prompt,
-                            memory_context_max_tokens=args.memory_context_max_tokens,
-                            reader_temperature=args.temperature,
-                            reader_top_p=args.top_p,
-                            cancel_event=prompt_build_cancel_event,
+    # E1: reuse prompt rows from an interrupted/judge-failed attempt so a rerun
+    # needs no controller (GPU) calls; only used when they cover every question.
+    reused_prompt_rows = False
+    cached_prompt_path = output_dir / "prompt_rows.jsonl"
+    if cached_prompt_path.exists():
+        try:
+            with cached_prompt_path.open("r", encoding="utf-8") as fp:
+                cached_rows = [json.loads(line) for line in fp if line.strip()]
+        except json.JSONDecodeError:
+            cached_rows = []
+        if sorted(r.get("question_id") for r in cached_rows) == sorted(question_ids):
+            order = {qid: n for n, qid in enumerate(question_ids)}
+            prompt_rows = sorted(cached_rows, key=lambda r: order[r["question_id"]])
+            reused_prompt_rows = True
+            print(f"Reusing {len(prompt_rows)} cached prompt rows from {cached_prompt_path}", flush=True)
+    if not reused_prompt_rows:
+        with prompt_build_interrupt_context(prompt_build_cancel_event):
+            if shared_memory is not None and args.prompt_build_max_workers > 1:
+                print(
+                    "Building prompts in parallel across shared memory with "
+                    f"{args.prompt_build_max_workers} workers."
+                )
+                with ThreadPoolExecutor(max_workers=args.prompt_build_max_workers) as executor:
+                    try:
+                        future_to_item = {
+                            executor.submit(
+                                build_prompt_row,
+                                item,
+                                haystack_ids=haystack_mapping[item["question_id"]],
+                                memory=shared_memory,
+                                system_prompt=system_prompt,
+                                memory_context_max_tokens=args.memory_context_max_tokens,
+                            ): item
+                            for item in prepared_questions
+                        }
+                        for future in tqdm(as_completed(future_to_item), total=len(future_to_item), desc="Building prompts", unit="q"):
+                            item = future_to_item[future]
+                            try:
+                                prompt_rows.append(future.result())
+                            except KeyboardInterrupt:
+                                prompt_build_cancel_event.set()
+                                raise
+                            except Exception as exc:
+                                raise RuntimeError(
+                                    f"Prompt building failed for question {item['question_id']}"
+                                ) from exc
+                    except KeyboardInterrupt:
+                        prompt_build_cancel_event.set()
+                        raise
+                prompt_rows.sort(key=lambda row: row["stream_index"])
+            elif (
+                shared_memory is None
+                and args.prompt_build_max_workers > 1
+                and supports_nonshared_parallel
+            ):
+                require(memory_config is not None, "Missing memory config for per-question memory construction")
+                require(trajectories is not None, "Missing trajectories for per-question memory construction")
+                print(
+                    "Building prompts in parallel across non-shared per-question memory with "
+                    f"{args.prompt_build_max_workers} workers."
+                )
+                query_trace_dir = output_dir / "query_traces"
+                with ThreadPoolExecutor(max_workers=args.prompt_build_max_workers) as executor:
+                    try:
+                        future_to_item = {
+                            executor.submit(
+                                build_prompt_row_with_per_question_memory,
+                                item,
+                                haystack_ids=haystack_mapping[item["question_id"]],
+                                memory_config=memory_config,
+                                trajectories=trajectories,
+                                trajectories_path=args.trajectories_path,
+                                workspace_dir=memory_workspace_root / item["query_invocation_id"],
+                                query_trace_dir=query_trace_dir,
+                                system_prompt=system_prompt,
+                                memory_context_max_tokens=args.memory_context_max_tokens,
+                                reader_temperature=args.temperature,
+                                reader_top_p=args.top_p,
+                                cancel_event=prompt_build_cancel_event,
+                            ): item
+                            for item in prepared_questions
+                        }
+                        for future in tqdm(
+                            as_completed(future_to_item),
+                            total=len(future_to_item),
+                            desc="Building prompts",
+                            unit="q",
+                        ):
+                            item = future_to_item[future]
+                            try:
+                                prompt_rows.append(future.result())
+                            except KeyboardInterrupt:
+                                prompt_build_cancel_event.set()
+                                raise
+                            except Exception as exc:
+                                raise RuntimeError(
+                                    f"Prompt building failed for question {item['question_id']}"
+                                ) from exc
+                    except KeyboardInterrupt:
+                        prompt_build_cancel_event.set()
+                        raise
+                prompt_rows.sort(key=lambda row: row["stream_index"])
+            else:
+                for item in tqdm(prepared_questions, desc="Building prompts", unit="q"):
+                    qid = item["question_id"]
+                    haystack_ids = haystack_mapping[qid]
+                    if shared_memory is None:
+                        require(memory_config is not None, "Missing memory config for per-question memory construction")
+                        require(trajectories is not None, "Missing trajectories for per-question memory construction")
+                        prompt_rows.append(
+                            build_prompt_row_with_per_question_memory(
+                                item,
+                                haystack_ids=haystack_ids,
+                                memory_config=memory_config,
+                                trajectories=trajectories,
+                                trajectories_path=args.trajectories_path,
+                                workspace_dir=memory_workspace_root / item["query_invocation_id"],
+                                query_trace_dir=output_dir / "query_traces",
+                                system_prompt=system_prompt,
+                                memory_context_max_tokens=args.memory_context_max_tokens,
+                                reader_temperature=args.temperature,
+                                reader_top_p=args.top_p,
+                                cancel_event=prompt_build_cancel_event,
+                            )
                         )
-                    )
-                else:
-                    memory = shared_memory
+                    else:
+                        memory = shared_memory
 
-                if shared_memory is not None:
-                    prompt_rows.append(
-                        build_prompt_row(
-                            item,
-                            haystack_ids=haystack_ids,
-                            memory=memory,
-                            system_prompt=system_prompt,
-                            memory_context_max_tokens=args.memory_context_max_tokens,
+                    if shared_memory is not None:
+                        prompt_rows.append(
+                            build_prompt_row(
+                                item,
+                                haystack_ids=haystack_ids,
+                                memory=memory,
+                                system_prompt=system_prompt,
+                                memory_context_max_tokens=args.memory_context_max_tokens,
+                            )
                         )
-                    )
 
     # pass 2: get outputs for all prompts
     with (output_dir / "prompt_rows.jsonl").open("w", encoding="utf-8") as fp:
