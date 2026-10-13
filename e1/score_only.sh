@@ -1,7 +1,9 @@
 #!/bin/bash
 # Re-score a finished run with the LLM judge only: reuses the saved index, cached
 # prompt_rows.jsonl and reader_outputs_cache.jsonl, so no vLLM/GPU is needed.
-# Usage (on a compute node): RUN_TAG=agentrunbook_r_small METHOD=agentrunbook_r bash e1/score_only.sh
+# transformers 5.x cannot import on CPU-only nodes ("Cannot access accelerator"), so run on the
+# cheapest GPU class; the GPU is not used for compute:
+#   sbatch -p gpu --gpus=nv:1 -c 4 --mem=32G --time=00:45:00 -J e1-score -o %x.%j.log --wrap "bash $HOME/e1/LongMemEval-V2/e1/score_only.sh"
 set -euo pipefail
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2
 METHOD=${METHOD:-agentrunbook_r}; RUN_TAG=${RUN_TAG:-${METHOD}_small}; DOMAINS=${DOMAINS:-"web enterprise"}
