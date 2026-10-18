@@ -7,6 +7,7 @@
 #   ARM=b1   : official system prompt with the backspace fixed; reader rerun
 #   ARM=p    : b1 + premise-check note; reader rerun (reuses gate verdicts if present)
 #   ARM=b0r  : baseline rows unchanged, reader rerun -> run-to-run noise of the reader
+#   ARM=bud  : B1 prompt, only questions that hit the 20k cap in B0, rerun with a 40k budget (diagnostic)
 #   ARM=pa / ps : P with note rule any / strict, reader rerun ONLY on noted questions
 #                 (unnoted prompts are identical to B1; merge with B1 outputs at analysis time)
 # Reader-only: the embedding server is not started. Reader outputs are cached per question, so a
@@ -61,6 +62,18 @@ case "$ARM" in
           ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
           "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
+             --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
+          wait $! || rc=$?
+        done ;;
+  bud)  DST=$E1/runs/bud_small; rc=0
+        if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
+          "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --ids-from-capped &
+          wait $! || { kill $READER_PID 2>/dev/null; exit 1; }
+        fi
+        for d in web enterprise; do
+          ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+          "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+             --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" --max-completion-tokens 40000 \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
         done ;;

@@ -167,6 +167,8 @@ def main() -> None:
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--note-rule", choices=["any", "strict"], default="any")
+    ap.add_argument("--ids-from-capped", action="store_true",
+                    help="keep only questions whose SOURCE reader output hit the 20k completion cap")
     ap.add_argument("--only-noted", action="store_true",
                     help="write prompt rows only for questions that receive a note (others are identical to B1)")
     ap.add_argument("--latency-sample", type=int, default=0,
@@ -190,6 +192,13 @@ def main() -> None:
         rows = [json.loads(l) for l in open(src / "prompt_rows.jsonl") if l.strip()]
         if args.limit:
             rows = rows[: args.limit]
+        if args.ids_from_capped:
+            capped = set()
+            for l in open(src / "reader_outputs_cache.jsonl"):
+                c = json.loads(l)
+                if (c["output"].get("usage") or {}).get("completion_tokens", 0) >= 20000:
+                    capped.add(c["question_id"])
+            rows = [r for r in rows if r["question_id"] in capped]
         log(f"{dom}: {len(rows)} rows from {src}")
 
         verdicts: dict[str, dict] = {}
@@ -257,7 +266,7 @@ def main() -> None:
                     r["e1_premise_verdict"] = v.get("overall")
                     r["e1_premise_note_added"] = note is not None
                 fp.write(json.dumps(r, ensure_ascii=True) + "\n")
-        if args.only_noted:
+        if args.only_noted or args.ids_from_capped:
             (dst / "noted_ids.txt").write_text(",".join(
                 json.loads(l)["question_id"] for l in open(out_path) if l.strip()))
         log(f"{dom}: wrote {out_path} (system prompt fixed in {n_fixed}, premise note added to {n_noted})")
