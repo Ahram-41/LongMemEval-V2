@@ -2,6 +2,7 @@
 #SBATCH -p gpu-long --gpus=h100-96:1 -c 16 --mem=96G --time=2-23:00:00
 #SBATCH -J e1-baseline -o %x.%j.log
 #SBATCH --signal=B:TERM@180
+#SBATCH --exclude=xgpj0   # aarch64 node; our conda envs are x86_64
 # Resumable RAG slice+notes baseline on LME-V2 Small. Re-submit the same script to resume;
 # on SIGTERM (time limit) it resubmits itself. Override: LIMIT=5 for a smoke test,
 # DOMAINS="web enterprise", RUN_TAG=..., READER_MAX_LEN=65536.
