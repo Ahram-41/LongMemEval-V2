@@ -2,7 +2,8 @@
 #SBATCH -p gpu-long --gpus=h100-96:1 -c 16 --mem=96G --time=12:00:00
 #SBATCH -J e1-arm -o %x.%j.log
 #SBATCH --signal=B:TERM@180
-#SBATCH --exclude=xgpj0   # aarch64 node; our conda envs are x86_64
+# xgpj0 is aarch64; our conda envs are x86_64
+#SBATCH --exclude=xgpj0
 # Arms derived from the AgentRunbook-R baseline (retrieval reused byte-for-byte).
 #   ARM=gate : premise checker only, on all questions -> gate_summary (no reader)
 #   ARM=b1   : official system prompt with the backspace fixed; reader rerun
