@@ -39,3 +39,11 @@ for name, sel in [("false-premise (abstention)", lambda r: r["is_abstention_prob
 secs = [v["check_seconds"] for v in ver.values() if v.get("check_seconds")]
 if secs:
     print(f"\nchecker seconds/question: mean {statistics.mean(secs):.1f}, median {statistics.median(secs):.1f}, max {max(secs):.1f}")
+lat = []
+for d in sorted(arm.glob("*_small")):
+    p = d / "premise_check_latency.jsonl"
+    if p.exists():
+        lat += [json.loads(l)["check_seconds"] for l in open(p)]
+if lat:
+    print(f"sequential (one-at-a-time) checker seconds: n={len(lat)} mean {statistics.mean(lat):.1f} median {statistics.median(lat):.1f} max {max(lat):.1f}")
+    print(f"conservative P query latency = baseline 13.9 s (measured under 8-way concurrency) + {statistics.mean(lat):.1f} = {13.9+statistics.mean(lat):.1f} s vs budget 26.9 s")

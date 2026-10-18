@@ -17,7 +17,7 @@ PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 source "$REPO/e1/serve_vllm.sh" || { echo "[arm] vLLM failed to start"; exit 1; }
 cd "$REPO"
 case "$ARM" in
-  gate) "$PY" e1/derive_arm.py --src "$BASE" --dst "$E1/runs/p_small" --premise-check --check-only ${LIMIT:+--limit $LIMIT}
+  gate) "$PY" e1/derive_arm.py --src "$BASE" --dst "$E1/runs/p_small" --premise-check --check-only --latency-sample ${LAT_SAMPLE:-10} ${LIMIT:+--limit $LIMIT}
         "$PY" e1/gate_summary.py "$BASE" "$E1/runs/p_small"; rc=$? ;;
   b1|p) DST=$E1/runs/${ARM}_small
         FLAGS="--fix-prompt"; [ "$ARM" = p ] && FLAGS="$FLAGS --premise-check"

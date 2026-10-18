@@ -91,17 +91,24 @@ def memory_text(memory_context: list[dict], max_chars: int) -> str:
 
 
 def parse_verdict(raw: str) -> dict:
-    m = re.search(r"\{.*\}", raw or "", re.S)
-    if not m:
-        return {"overall": "PARSE_ERROR", "assumptions": [], "raw": (raw or "")[:500]}
-    try:
-        obj = json.loads(m.group(0))
-    except json.JSONDecodeError:
-        return {"overall": "PARSE_ERROR", "assumptions": [], "raw": (raw or "")[:500]}
-    overall = str(obj.get("overall", "")).upper()
+    raw = raw or ""
+    obj = None
+    start = raw.find("{")
+    if start >= 0:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(raw[start:])
+        except json.JSONDecodeError:
+            obj = None
+    if isinstance(obj, dict):
+        overall = str(obj.get("overall", "")).upper()
+        assumptions = obj.get("assumptions") or []
+    else:  # fall back to the overall field alone
+        m = re.search(r'"overall"\s*:\s*"(SUPPORTED|CONTRADICTED|NOT_FOUND)"', raw, re.I)
+        overall = m.group(1).upper() if m else ""
+        assumptions = []
     if overall not in {"SUPPORTED", "CONTRADICTED", "NOT_FOUND"}:
-        overall = "PARSE_ERROR"
-    return {"overall": overall, "assumptions": obj.get("assumptions") or []}
+        return {"overall": "PARSE_ERROR", "assumptions": assumptions, "raw": raw[:4000]}
+    return {"overall": overall, "assumptions": assumptions}
 
 
 def run_check(client, model: str, row: dict, args) -> dict:
@@ -146,6 +153,8 @@ def main() -> None:
     ap.add_argument("--check-temperature", type=float, default=0.6)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--latency-sample", type=int, default=0,
+                    help="after the concurrent run, time N checker calls one at a time (clean per-query latency)")
     ap.add_argument("--memory-context-max-tokens", type=int, default=200000)
     args = ap.parse_args()
 
@@ -190,6 +199,16 @@ def main() -> None:
                     vfp.write(json.dumps(v) + "\n"); vfp.flush()
                     if i % 25 == 0:
                         log(f"{dom}: checked {i}/{len(todo)}")
+        if args.premise_check and args.latency_sample:
+            import random
+            sample = random.Random(0).sample(rows, min(args.latency_sample, len(rows)))
+            with open(dst / "premise_check_latency.jsonl", "w") as lfp:
+                for r in sample:
+                    v = run_check(client, model, r, args)
+                    lfp.write(json.dumps({"question_id": r["question_id"], "check_seconds": v["check_seconds"],
+                                          "completion_tokens": v.get("completion_tokens"),
+                                          "context_tokens": r.get("memory_context_token_count")}) + "\n")
+            log(f"{dom}: sequential latency sample of {len(sample)} written")
         if args.check_only:
             continue
 
