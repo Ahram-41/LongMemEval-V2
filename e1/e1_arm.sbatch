@@ -15,6 +15,8 @@
 # Reader-only: the embedding server is not started. Reader outputs are cached per question, so a
 # job killed at its time limit resubmits itself (RESUBMIT_MAX, default 4) and resumes.
 set -uo pipefail
+# never "kill 0": that signals the whole process group, including this script
+killsrv() { for p in ${READER_PID:-} ${EMBED_PID:-}; do [ -n "$p" ] && [ "$p" != 0 ] && kill "$p" 2>/dev/null; done; return 0; }
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2; export E1
 ARM=${ARM:?set ARM=gate|b1|p}; BASE=$E1/runs/agentrunbook_r_small
 [ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a
@@ -25,7 +27,7 @@ export DATA_ROOT=$E1/data/longmemeval-v2 HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1 P
 PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 RESUBMIT_COUNT=${RESUBMIT_COUNT:-0}; RESUBMIT_MAX=${RESUBMIT_MAX:-4}
 resubmit() {
-  kill ${READER_PID:-0} ${EMBED_PID:-0} 2>/dev/null
+  killsrv
   if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[arm] resubmit cap reached"; exit 1; fi
   echo "[arm] time limit: resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
   cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL -p "$SLURM_JOB_PARTITION" --gpus="$SBATCH_GPUS_RESUB" --time="$SBATCH_TIME_RESUB" -J "$SLURM_JOB_NAME" "$REPO/e1/e1_arm.sbatch"; exit 0
@@ -41,7 +43,7 @@ case "$ARM" in
         FLAGS="--fix-prompt"; [ "$ARM" = p ] && FLAGS="$FLAGS --premise-check"; [ "$ARM" = b0r ] && FLAGS=""
         if [ ! -s "$DST/enterprise_small/prompt_rows.jsonl" ]; then
           "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" $FLAGS ${LIMIT:+--limit $LIMIT} &
-          wait $! || { kill $READER_PID 2>/dev/null; exit 1; }
+          wait $! || { killsrv; exit 1; }
         fi
         rc=0
         for d in web enterprise; do
@@ -58,7 +60,7 @@ case "$ARM" in
         mkdir -p "$DST"; for d in web enterprise; do mkdir -p "$DST/${d}_small"; cp -n "$E1/runs/p_small/${d}_small/premise_check.jsonl" "$DST/${d}_small/" 2>/dev/null; done
         if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
           "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --premise-check --note-rule $RULE --only-noted &
-          wait $! || { kill $READER_PID 2>/dev/null; exit 1; }
+          wait $! || { killsrv; exit 1; }
         fi
         for d in web enterprise; do
           ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
@@ -70,7 +72,7 @@ case "$ARM" in
   bud)  DST=$E1/runs/bud_small; rc=0
         if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
           "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --ids-from-capped &
-          wait $! || { kill $READER_PID 2>/dev/null; exit 1; }
+          wait $! || { killsrv; exit 1; }
         fi
         for d in web enterprise; do
           ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
@@ -81,5 +83,5 @@ case "$ARM" in
         done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
-kill $READER_PID $EMBED_PID 2>/dev/null
+killsrv
 exit ${rc:-0}

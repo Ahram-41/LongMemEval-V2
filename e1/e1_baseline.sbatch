@@ -8,6 +8,8 @@
 # on SIGTERM (time limit) it resubmits itself. Override: LIMIT=5 for a smoke test,
 # DOMAINS="web enterprise", RUN_TAG=..., READER_MAX_LEN=65536.
 set -uo pipefail
+# never "kill 0": that signals the whole process group, including this script
+killsrv() { for p in ${READER_PID:-} ${EMBED_PID:-}; do [ -n "$p" ] && [ "$p" != 0 ] && kill "$p" 2>/dev/null; done; return 0; }
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2
 export E1
 METHOD=${METHOD:-agentrunbook_r}
@@ -26,7 +28,7 @@ LME_PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 
 RESUBMIT_COUNT=${RESUBMIT_COUNT:-0}; RESUBMIT_MAX=${RESUBMIT_MAX:-3}
 resubmit() {
-  kill ${READER_PID:-0} ${EMBED_PID:-0} 2>/dev/null
+  killsrv
   if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[sbatch] resubmit cap $RESUBMIT_MAX reached; NOT resubmitting"; exit 1; fi
   echo "[sbatch] time limit, resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
   cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL "$REPO/e1/e1_baseline.sbatch"; exit 0
@@ -54,5 +56,5 @@ if [ "$status" -eq 0 ] && [ -z "$LIMIT" ]; then
      "$E1/runs/$RUN_TAG/web_small/aggregated_metrics.json" \
      -o "$E1/runs/$RUN_TAG/combined_metrics.json" && cat "$E1/runs/$RUN_TAG/combined_metrics.json"
 fi
-kill $READER_PID $EMBED_PID 2>/dev/null
+killsrv
 exit $status
