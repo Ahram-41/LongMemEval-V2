@@ -130,10 +130,23 @@ def run_check(client, model: str, row: dict, args) -> dict:
     return v
 
 
-def note_from_verdict(v: dict) -> str | None:
+# Identical to the frozen rule in e1/strict_rule.py (committed 5894287 before enterprise was examined).
+QUOTED = re.compile(r'"([^"]{2,80})"|`([^`]{2,80})`|\u201c([^\u201d]{2,80})\u201d|\'([^\']{3,80})\'')
+
+
+def quoted_terms(q: str) -> set:
+    return {next(g for g in m.groups() if g).strip().lower() for m in QUOTED.finditer(q)}
+
+
+def note_from_verdict(v: dict, question: str = "", rule: str = "any") -> str | None:
     if v.get("overall") != "CONTRADICTED":
         return None
     contra = [a for a in v.get("assumptions", []) if str(a.get("status", "")).upper() == "CONTRADICTED"]
+    if rule == "strict":
+        terms = quoted_terms(question)
+        contra = [a for a in contra if any(t in str(a.get("text", "")).lower() for t in terms)]
+        if not contra:
+            return None
     a = contra[0] if contra else {}
     return NOTE_TEMPLATE.format(assumption=str(a.get("text", "(unspecified)"))[:400],
                                 evidence=str(a.get("evidence", "(unspecified)"))[:600])
@@ -153,6 +166,9 @@ def main() -> None:
     ap.add_argument("--check-temperature", type=float, default=0.6)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
+    ap.add_argument("--note-rule", choices=["any", "strict"], default="any")
+    ap.add_argument("--only-noted", action="store_true",
+                    help="write prompt rows only for questions that receive a note (others are identical to B1)")
     ap.add_argument("--latency-sample", type=int, default=0,
                     help="after the concurrent run, time N checker calls one at a time (clean per-query latency)")
     ap.add_argument("--memory-context-max-tokens", type=int, default=200000)
@@ -217,7 +233,10 @@ def main() -> None:
         with open(out_path, "w") as fp:
             for r in rows:
                 mc = list(r["memory_context"])
-                note = note_from_verdict(verdicts.get(r["question_id"], {})) if args.premise_check else None
+                note = (note_from_verdict(verdicts.get(r["question_id"], {}), r["question_text"], args.note_rule)
+                        if args.premise_check else None)
+                if args.only_noted and note is None:
+                    continue
                 if note is not None:
                     mc = [{"type": "text", "value": note}] + mc
                     mc, orig_tok, trunc_tok = truncate_memory_context(
@@ -238,6 +257,9 @@ def main() -> None:
                     r["e1_premise_verdict"] = v.get("overall")
                     r["e1_premise_note_added"] = note is not None
                 fp.write(json.dumps(r, ensure_ascii=True) + "\n")
+        if args.only_noted:
+            (dst / "noted_ids.txt").write_text(",".join(
+                json.loads(l)["question_id"] for l in open(out_path) if l.strip()))
         log(f"{dom}: wrote {out_path} (system prompt fixed in {n_fixed}, premise note added to {n_noted})")
 
 

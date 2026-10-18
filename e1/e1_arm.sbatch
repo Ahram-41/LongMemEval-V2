@@ -7,6 +7,8 @@
 #   ARM=b1   : official system prompt with the backspace fixed; reader rerun
 #   ARM=p    : b1 + premise-check note; reader rerun (reuses gate verdicts if present)
 #   ARM=b0r  : baseline rows unchanged, reader rerun -> run-to-run noise of the reader
+#   ARM=pa / ps : P with note rule any / strict, reader rerun ONLY on noted questions
+#                 (unnoted prompts are identical to B1; merge with B1 outputs at analysis time)
 # Reader-only: the embedding server is not started. Reader outputs are cached per question, so a
 # job killed at its time limit resubmits itself (RESUBMIT_MAX, default 4) and resumes.
 set -uo pipefail
@@ -48,6 +50,20 @@ case "$ARM" in
         [ -z "${LIMIT:-}" ] && "$PY" leaderboard/combine_aggregated_metrics.py \
              "$DST/enterprise_small/aggregated_metrics.json" "$DST/web_small/aggregated_metrics.json" \
              -o "$DST/combined_metrics.json" && cat "$DST/combined_metrics.json" | head -12 ;;
+  pa|ps) RULE=any; [ "$ARM" = ps ] && RULE=strict
+        DST=$E1/runs/${ARM}_small; rc=0
+        mkdir -p "$DST"; for d in web enterprise; do mkdir -p "$DST/${d}_small"; cp -n "$E1/runs/p_small/${d}_small/premise_check.jsonl" "$DST/${d}_small/" 2>/dev/null; done
+        if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
+          "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --premise-check --note-rule $RULE --only-noted &
+          wait $! || { kill $READER_PID 2>/dev/null; exit 1; }
+        fi
+        for d in web enterprise; do
+          ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+          "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+             --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
+             --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
+          wait $! || rc=$?
+        done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 kill $READER_PID $EMBED_PID 2>/dev/null
