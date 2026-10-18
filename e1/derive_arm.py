@@ -134,11 +134,34 @@ def run_check(client, model: str, row: dict, args) -> dict:
 QUOTED = re.compile(r'"([^"]{2,80})"|`([^`]{2,80})`|\u201c([^\u201d]{2,80})\u201d|\'([^\']{3,80})\'')
 
 
+NOTE_NF_TEMPLATE = """## Premise check (automatic; may be wrong)
+The retrieved memory shows no evidence for an element the question takes for granted:
+- Assumed element: {assumption}
+- What the memory shows: {evidence}
+Check the evidence below. If the relevant page or form is covered and the element is absent, the question's
+premise is probably wrong: explain inside \\boxed{{}} why the question is flawed. If the memory simply does not
+cover that page, answer from the evidence you have.
+"""
+
+
 def quoted_terms(q: str) -> set:
     return {next(g for g in m.groups() if g).strip().lower() for m in QUOTED.finditer(q)}
 
 
 def note_from_verdict(v: dict, question: str = "", rule: str = "any") -> str | None:
+    if rule == "nfq":  # frozen on the web dev split, commit after 5894287 (see log 02:25)
+        if v.get("overall") not in {"CONTRADICTED", "NOT_FOUND"}:
+            return None
+        terms = quoted_terms(question)
+        hits = [a for a in v.get("assumptions", [])
+                if str(a.get("status", "")).upper() in {"CONTRADICTED", "NOT_FOUND"}
+                and any(t in str(a.get("text", "")).lower() for t in terms)]
+        if not hits:
+            return None
+        a = sorted(hits, key=lambda x: str(x.get("status", "")).upper() != "CONTRADICTED")[0]
+        tmpl = NOTE_TEMPLATE if str(a.get("status", "")).upper() == "CONTRADICTED" else NOTE_NF_TEMPLATE
+        return tmpl.format(assumption=str(a.get("text", "(unspecified)"))[:400],
+                           evidence=str(a.get("evidence", "(unspecified)"))[:600])
     if v.get("overall") != "CONTRADICTED":
         return None
     contra = [a for a in v.get("assumptions", []) if str(a.get("status", "")).upper() == "CONTRADICTED"]
@@ -166,7 +189,7 @@ def main() -> None:
     ap.add_argument("--check-temperature", type=float, default=0.6)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--note-rule", choices=["any", "strict"], default="any")
+    ap.add_argument("--note-rule", choices=["any", "strict", "nfq"], default="any")
     ap.add_argument("--ids-from-capped", action="store_true",
                     help="keep only questions whose SOURCE reader output hit the 20k completion cap")
     ap.add_argument("--only-noted", action="store_true",

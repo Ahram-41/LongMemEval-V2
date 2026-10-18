@@ -53,7 +53,7 @@ case "$ARM" in
         [ -z "${LIMIT:-}" ] && "$PY" leaderboard/combine_aggregated_metrics.py \
              "$DST/enterprise_small/aggregated_metrics.json" "$DST/web_small/aggregated_metrics.json" \
              -o "$DST/combined_metrics.json" && cat "$DST/combined_metrics.json" | head -12 ;;
-  pa|ps) RULE=any; [ "$ARM" = ps ] && RULE=strict
+  pa|ps|pnf) RULE=any; [ "$ARM" = ps ] && RULE=strict; [ "$ARM" = pnf ] && RULE=nfq
         DST=$E1/runs/${ARM}_small; rc=0
         mkdir -p "$DST"; for d in web enterprise; do mkdir -p "$DST/${d}_small"; cp -n "$E1/runs/p_small/${d}_small/premise_check.jsonl" "$DST/${d}_small/" 2>/dev/null; done
         if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
