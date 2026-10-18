@@ -13,9 +13,9 @@ set -uo pipefail
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2; export E1
 ARM=${ARM:?set ARM=gate|b1|p}; BASE=$E1/runs/agentrunbook_r_small
 [ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a
-export READER_BASE_URL=http://localhost:8023/v1 READER_MODEL=Qwen/Qwen3.5-9B
-export LME_CONTROLLER_BASE_URL=http://localhost:8023/v1 LME_CONTROLLER_MODEL=Qwen/Qwen3.5-9B
-export LME_EMBEDDING_BASE_URL=http://localhost:8114/v1 LME_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
+export READER_MODEL=Qwen/Qwen3.5-9B
+export LME_CONTROLLER_MODEL=Qwen/Qwen3.5-9B
+export LME_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
 export DATA_ROOT=$E1/data/longmemeval-v2 HF_HOME=$E1/hf_cache HF_HUB_OFFLINE=1 PYTHONNOUSERSITE=1
 PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 RESUBMIT_COUNT=${RESUBMIT_COUNT:-0}; RESUBMIT_MAX=${RESUBMIT_MAX:-4}

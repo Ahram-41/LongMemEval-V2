@@ -9,6 +9,11 @@ READER_MAX_LEN=${READER_MAX_LEN:-262144}   # official protocol: 200k context + 2
 VLLM_PY=$E1/miniforge3/envs/vllm/bin
 export PATH="$VLLM_PY:/usr/local/cuda/bin:$PATH" CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}   # ninja + nvcc for flashinfer JIT
 TAG=${SLURM_JOB_ID:-local}
+# Per-job ports so two of our jobs on one node never share a server (and never hit a stranger's 8023).
+if [ -n "${SLURM_JOB_ID:-}" ]; then READER_PORT=${READER_PORT:-$((20000 + SLURM_JOB_ID % 20000))}; EMBED_PORT=${EMBED_PORT:-$((READER_PORT + 1))}; fi
+READER_PORT=${READER_PORT:-8023}; EMBED_PORT=${EMBED_PORT:-8114}
+export READER_PORT EMBED_PORT
+export READER_BASE_URL=http://localhost:$READER_PORT/v1 LME_CONTROLLER_BASE_URL=http://localhost:$READER_PORT/v1 LME_EMBEDDING_BASE_URL=http://localhost:$EMBED_PORT/v1
 
 wait_healthy() {  # port, pid, name
   local t=0
@@ -22,19 +27,19 @@ wait_healthy() {  # port, pid, name
 # Start sequentially: each vLLM instance profiles free memory at startup, so two
 # concurrent starts on one GPU under-count each other and fail KV allocation.
 if [ -z "${NO_EMBED:-}" ]; then
-"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
+"$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port $EMBED_PORT \
   --dtype bfloat16 --max-model-len 8192 --max-num-seqs 32 \
   --gpu-memory-utilization ${EMBED_MEM_FRAC:-0.30} \
   > "$LOGDIR/embed.$TAG.log" 2>&1 &
 EMBED_PID=$!
 export EMBED_PID
-wait_healthy 8114 "$EMBED_PID" embedding || return 1
+wait_healthy $EMBED_PORT "$EMBED_PID" embedding || return 1
 else
   EMBED_PID=0; export EMBED_PID; echo "[serve] NO_EMBED=1: reader only"
   READER_MEM_FRAC=${READER_MEM_FRAC:-0.90}
 fi
 
-"$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
+"$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port $READER_PORT \
   --dtype bfloat16 --max-model-len "$READER_MAX_LEN" \
   --gpu-memory-utilization ${READER_MEM_FRAC:-0.62} \
   --max-num-seqs ${READER_MAX_SEQS:-8} --enable-prefix-caching \
@@ -43,4 +48,4 @@ fi
   > "$LOGDIR/reader.$TAG.log" 2>&1 &
 READER_PID=$!
 export READER_PID
-wait_healthy 8023 "$READER_PID" reader
+wait_healthy $READER_PORT "$READER_PID" reader
