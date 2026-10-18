@@ -21,6 +21,7 @@ wait_healthy() {  # port, pid, name
 
 # Start sequentially: each vLLM instance profiles free memory at startup, so two
 # concurrent starts on one GPU under-count each other and fail KV allocation.
+if [ -z "${NO_EMBED:-}" ]; then
 "$VLLM_PY/vllm" serve Qwen/Qwen3-Embedding-8B --runner pooling --port 8114 \
   --dtype bfloat16 --max-model-len 8192 --max-num-seqs 32 \
   --gpu-memory-utilization ${EMBED_MEM_FRAC:-0.30} \
@@ -28,6 +29,10 @@ wait_healthy() {  # port, pid, name
 EMBED_PID=$!
 export EMBED_PID
 wait_healthy 8114 "$EMBED_PID" embedding || return 1
+else
+  EMBED_PID=0; export EMBED_PID; echo "[serve] NO_EMBED=1: reader only"
+  READER_MEM_FRAC=${READER_MEM_FRAC:-0.90}
+fi
 
 "$VLLM_PY/vllm" serve Qwen/Qwen3.5-9B --port 8023 \
   --dtype bfloat16 --max-model-len "$READER_MAX_LEN" \
