@@ -81,7 +81,20 @@ async def run_one(client, model, row, inj, args, sem):
         tok1 = r1.usage.completion_tokens if r1.usage else 0
         still_thinking = r1.choices[0].finish_reason == "length" and not cont1.strip()
         log = {"question_id": row["question_id"], "stage1_tokens": tok1, "injected": False}
-        if not still_thinking:
+        answer_cut = r1.choices[0].finish_reason == "length" and bool(cont1.strip())
+        if answer_cut:
+            # thinking finished before K but the answer was cut: continue it, no injection
+            prefix = "<think>\n" + reas1.strip("\n") + "\n</think>\n\n" + cont1
+            msgs = row["messages"] + [{"role": "assistant", "content": prefix}]
+            r2 = await client.chat.completions.create(
+                model=model, messages=msgs, max_tokens=args.budget - args.k, timeout=3600,
+                extra_body={"top_k": 20, "continue_final_message": True, "add_generation_prompt": False},
+                **sampling)
+            m2 = r2.choices[0].message
+            final_raw = cont1 + (m2.content or "") + reasoning_of(m2)
+            total = tok1 + (r2.usage.completion_tokens if r2.usage else 0)
+            log.update({"answer_continued": True, "stage2_tokens": total - tok1})
+        elif not still_thinking:
             text = cont1 if cont1.strip() else reas1
             final_raw, total = text, tok1
         else:
