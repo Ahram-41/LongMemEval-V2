@@ -11,4 +11,7 @@ echo "===== paired comparison (reference B1: effect of the note alone)"
 python3 e1/compare_arms.py $R b1_small pa_merged_small ps_merged_small pnf_merged_small
 echo "===== budget probe"
 python3 e1/budget_probe.py $R
+echo "===== minimal-pair test"
+python3 e1/pair_test.py $R 0.6
+python3 e1/pair_test.py $R 0.8
 for a in pa ps pnf; do for d in web_small enterprise_small; do [ -f $R/${a}_small/$d/per_question.jsonl ] && python3 e1/noted_eff.py ${a}_small $d; done; done
