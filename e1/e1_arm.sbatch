@@ -9,6 +9,7 @@
 #   ARM=b1   : official system prompt with the backspace fixed; reader rerun
 #   ARM=p    : b1 + premise-check note; reader rerun (reuses gate verdicts if present)
 #   ARM=b0r  : baseline rows unchanged, reader rerun -> run-to-run noise of the reader
+#   ARM=mid  : mid-thinking injection (mi = verdict, mn = verdict-free nudge) on P-any noted questions
 #   ARM=bud  : B1 prompt, only questions that hit the 20k cap in B0, rerun with a 40k budget (diagnostic)
 #   ARM=pa / ps : P with note rule any / strict, reader rerun ONLY on noted questions
 #                 (unnoted prompts are identical to B1; merge with B1 outputs at analysis time)
@@ -80,6 +81,19 @@ case "$ARM" in
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" --max-completion-tokens 40000 \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
+        done ;;
+  mid)  rc=0
+        "$PY" e1/check_continue.py || true
+        for A in ${MID_ARMS:-mi mn}; do
+          "$PY" e1/mid_inject.py --arm $A --k ${MID_K:-12000} ${LIMIT:+--limit $LIMIT} &
+          wait $! || { rc=1; continue; }
+          for d in web enterprise; do
+            ids=$(cat "$E1/runs/${A}_small/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+            "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+               --data-root "$DATA_ROOT" --output-dir "$E1/runs/${A}_small/${d}_small" --question-ids "$ids" \
+               --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
+            wait $! || rc=$?
+          done
         done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
