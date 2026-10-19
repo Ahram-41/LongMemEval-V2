@@ -13,7 +13,7 @@ Usage: python e1/pair_test.py ~/e1/runs [threshold=0.6]
 import json, math, sys
 from pathlib import Path
 
-root = Path(sys.argv[1]).expanduser(); th = float(sys.argv[2]) if len(sys.argv) > 2 else 0.6
+root = Path(sys.argv[1]).expanduser(); th = float(sys.argv[2]) if len(sys.argv) > 2 else 0.8  # 0.8: wording prior n.s. within pairs (pair_validate.py)
 pairs = [p for p in json.load(open(Path(__file__).with_name("minimal_pairs.json"))) if p["jaccard"] >= th]
 def load(arm, fname="per_question.jsonl"):
     out = {}
