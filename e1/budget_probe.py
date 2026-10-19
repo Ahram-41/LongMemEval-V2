@@ -10,13 +10,14 @@ import json, sys
 from pathlib import Path
 
 root = Path(sys.argv[1]).expanduser()
+KEEP = ("question_id", "score_bool", "is_unknown", "is_abstention_problem", "question_type", "usage", "memory_query_duration_seconds")
 def load(arm):
     out = {}
     for d in ["web_small", "enterprise_small"]:
         p = root / arm / d / "per_question.jsonl"
         if p.exists():
             for l in open(p):
-                r = json.loads(l); out[r["question_id"]] = r
+                r = json.loads(l); out[r["question_id"]] = {k: r.get(k) for k in KEEP}; del r
     return out
 b0, b1, bud = load("agentrunbook_r_small"), load("b1_small"), load("bud_small")
 toks = lambda r: (r.get("usage") or {}).get("completion_tokens", 0)

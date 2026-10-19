@@ -14,6 +14,7 @@ import sys
 from pathlib import Path
 
 CAP = 20000
+KEEP = ("question_id", "score_bool", "is_unknown", "is_abstention_problem", "question_type", "usage", "memory_query_duration_seconds")
 
 
 def load(run_root: Path, arm: str):
@@ -24,7 +25,8 @@ def load(run_root: Path, arm: str):
             return None
         for line in open(p):
             r = json.loads(line)
-            rows[r["question_id"]] = r
+            rows[r["question_id"]] = {k: r.get(k) for k in KEEP}
+            del r
     return rows
 
 
