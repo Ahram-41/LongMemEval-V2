@@ -44,6 +44,7 @@ fi
   --gpu-memory-utilization ${READER_MEM_FRAC:-0.62} \
   --max-num-seqs ${READER_MAX_SEQS:-8} --enable-prefix-caching \
   --reasoning-parser ${REASONING_PARSER:-qwen3} \
+  ${READER_CHAT_TEMPLATE:+--chat-template $READER_CHAT_TEMPLATE} \
   --limit-mm-per-prompt '{"image": '${MAX_IMAGES:-128}'}' \
   > "$LOGDIR/reader.$TAG.log" 2>&1 &
 READER_PID=$!
