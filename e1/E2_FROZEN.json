@@ -1,0 +1,11 @@
+{
+  "frozen_at": "2026-10-22 ~01:45 (cluster time), after 6 web-only rounds (rounds r1..r6 in ~/e1/e2work/rounds/)",
+  "selection_rule": "highest web answer-phrase coverage on the 158 complete web questions; ties -> simpler",
+  "query_source": "frozen (parsed controller queries; regenerated for the 107 incomplete questions). 'both' rejected: it adds one query, and the official merge then admits up to 2 more blocks, i.e. it changes the number of blocks in context (not an allowed knob); its web gain was +1 question.",
+  "bm25_tokenizer": "camel (56/78 vs basic 55/78, noid 55/78)",
+  "arms": {
+    "e2_single": {"variant": "G:quoted:camel", "web_ans": "57/78", "why": "best single method (T:camel 56/78, V-full 51/78, V 51/78)"},
+    "e2_fusion": {"variant": "rrf:10:V+T:camel", "web_ans": "59/78", "why": "best fusion (8 gains / 0 losses vs V); rrf:10:Vfull+T:camel 58/78, weighted w=0.2 57/78"}
+  },
+  "rejected": ["G:both / G:keywords (55 / 53)", "rrf:60 (56)", "3-way rrf:10 Vfull+T+G (55)", "question-text-only queries (V 47, G 39)"]
+}
