@@ -37,6 +37,8 @@ resubmit() {
 }
 trap resubmit TERM
 export NO_EMBED=1
+# local judge: short prompts, many parallel requests
+[ "$ARM" = ljudge ] && export READER_MAX_LEN=${READER_MAX_LEN:-65536} READER_MAX_SEQS=${READER_MAX_SEQS:-32}
 source "$REPO/e1/slurm/serve_vllm.sh" || { echo "[arm] vLLM failed to start"; exit 1; }
 cd "$REPO"
 case "$ARM" in
@@ -137,6 +139,9 @@ case "$ARM" in
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
         done ;;
+  ljudge) # local Qwen judge for LLM-judged questions (GPT-5.2 credits exhausted); LJ_ARMS comma list
+        "$PY" e1/analysis/local_judge.py --arms "${LJ_ARMS:-b1_small,e2_fusion_small}" ${LJ_IDS:+--ids-file $LJ_IDS} &
+        wait $!; rc=$? ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
