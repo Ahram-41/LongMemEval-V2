@@ -38,3 +38,36 @@ class DenseFull(Retriever):
         st = np.maximum.reduceat(ps, self.starts)
         st = np.append(st, -np.inf)
         return st[self.ent].max(axis=1)
+
+
+class DenseFullDedup(DenseFull):
+    """Exploratory mechanism check (not a frozen arm): rank entries by V-full score, but an entry whose
+    best-scoring piece is the same piece as that of a higher-ranked entry is skipped (falls through to
+    the end, keeping its relative order). Implemented as a score transform so the official top-k and
+    merge apply unchanged: duplicates get score - 10 (cosines are in [-1, 1])."""
+    name = "Vfulldedup"
+
+    def scores(self, q: Query) -> np.ndarray:
+        ps = self.P @ q.vec
+        # best piece per state
+        st_max = np.maximum.reduceat(ps, self.starts)
+        n_state = len(self.starts)
+        best_piece = np.empty(n_state, dtype=np.int64)
+        bounds = list(self.starts) + [len(ps)]
+        for j in range(n_state):
+            a, b = bounds[j], bounds[j + 1]
+            best_piece[j] = a + int(np.argmax(ps[a:b]))
+        st = np.append(st_max, -np.inf)
+        bp = np.append(best_piece, -1)
+        sc = st[self.ent]                       # [E, 3]
+        arg = sc.argmax(axis=1)
+        score = sc[np.arange(len(sc)), arg]
+        piece = bp[self.ent[np.arange(len(sc)), arg]]
+        out = score.copy()
+        seen = set()
+        for e in np.argsort(score)[::-1]:       # official ordering
+            if piece[e] in seen:
+                out[e] = score[e] - 10.0
+            else:
+                seen.add(piece[e])
+        return out

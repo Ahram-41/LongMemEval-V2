@@ -89,6 +89,9 @@ def build_retriever(spec: str, dom: str, store: EntryStore, cache: dict):
     if parts[0] == "Vfull":
         from e1.retrieval.dense_full import DenseFull
         return DenseFull(dom, store)
+    if parts[0] == "Vfulldedup":
+        from e1.retrieval.dense_full import DenseFullDedup
+        return DenseFullDedup(dom, store)
     if parts[0] == "T":
         key = ("T", parts[1])
         if key not in cache:
@@ -119,7 +122,7 @@ def do_score(dom: str, methods: list[str], force: bool = False) -> None:
     need_text = any(m.startswith(("T", "G")) for m in todo)
     store = EntryStore.load(dom, with_text=need_text)
     M = meta(dom)
-    qv = QueryVectors(dom) if any(m in ("V", "Vfull") for m in todo) else None
+    qv = QueryVectors(dom) if any(m in ("V", "Vfull", "Vfulldedup") for m in todo) else None
     cache: dict = {}
     for m in todo:
         r = build_retriever(m, dom, store, cache)
