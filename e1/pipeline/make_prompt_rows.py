@@ -38,8 +38,10 @@ def main() -> None:
     ap.add_argument("--section-order", default=None,
                     help="e.g. raw,events,notes: reorder memory sections before the 200k truncation (E2 arm A)")
     ap.add_argument("--force-rerun", action="store_true", help="rerun every selected question even if blocks equal B1's")
+    ap.add_argument("--ids-file", default=None, help="restrict to these question ids (comma-separated file)")
     a = ap.parse_args()
     from evaluation.harness import build_messages, truncate_memory_context
+    keep_ids = {x for x in Path(a.ids_file).expanduser().read_text().split(",") if x} if a.ids_file else None
     for dom in a.domains.split(","):
         dst = Path(a.dst).expanduser() / f"{dom}_small"
         dst.mkdir(parents=True, exist_ok=True)
@@ -50,6 +52,8 @@ def main() -> None:
             b0 = [(b["entry_id"], b["query"], b["rank"]) for b in Q[qid]["baseline_raw_blocks"]]
             new = [(b["entry_id"], b["query"], b["rank"]) for b in r["raw_blocks"]]
             if a.only == "regenerated" and r["query_source"] != "regenerated":
+                continue
+            if a.ids_file and qid not in keep_ids:
                 continue
             same = r["query_source"] == "parsed" and not Q[qid]["context_truncated"] and b0 == new and not a.force_rerun
             (reuse if same else rerun).append(qid)
@@ -101,7 +105,8 @@ def main() -> None:
         (dst / "reuse_ids.txt").write_text(",".join(sorted(reuse)))
         write_manifest(dst, inputs={"contexts": a.contexts, "retrieved": a.retrieved, "b1": a.b1},
                        params={"memory_context_max_tokens": a.memory_context_max_tokens, "only": a.only,
-                               "section_order": a.section_order, "force_rerun": a.force_rerun})
+                               "section_order": a.section_order, "force_rerun": a.force_rerun,
+                               "ids_file": a.ids_file})
         print(f"[prompt_rows] {dom}: rerun {len(rerun)} (regenerated queries {sum(R[q]['query_source'] == 'regenerated' for q in rerun)}), "
               f"reuse B1 {len(reuse)} -> {dst}", flush=True)
 
