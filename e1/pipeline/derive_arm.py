@@ -18,6 +18,9 @@ Transforms (combinable):
                    Verdicts are checkpointed to <dst>/<domain>_small/premise_check.jsonl.
   --check-only     With --premise-check: run the checker and write verdicts, but no prompt rows
                    (cheap gate: inspect recall / false-alarm before paying for a reader run).
+  --keep-sections  E2 S1c (memory form): keep only the listed sections of the memory context
+                   (notes, events, raw; section = its title item and every item up to the next
+                   section title). E.g. "notes,events" drops the raw-state slices.
 """
 from __future__ import annotations
 
@@ -172,6 +175,25 @@ def note_from_verdict(v: dict, question: str = "", rule: str = "any") -> str | N
                                 evidence=str(a.get("evidence", "(unspecified)"))[:600])
 
 
+SECTION_TITLES = {
+    "notes": "## Procedure and Hint Notes Learned from Previous Tasks in the Environment\n\n",
+    "events": "## Retrieved State-Transition Events from Previous Tasks in the Environment\n\n",
+    "raw": "## Retrieved Raw State Slices from Previous Tasks in the Environment\n\n",
+}
+
+
+def keep_sections(mc: list[dict], keep: set[str]) -> list[dict]:
+    out, cur = [], None
+    for it in mc:
+        if it.get("type") == "text":
+            for name, title in SECTION_TITLES.items():
+                if it["value"].startswith(title):
+                    cur = name
+        if cur in keep:
+            out.append(it)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--src", required=True, help="baseline run root, e.g. ~/e1/runs/agentrunbook_r_small")
@@ -194,6 +216,7 @@ def main() -> None:
     ap.add_argument("--latency-sample", type=int, default=0,
                     help="after the concurrent run, time N checker calls one at a time (clean per-query latency)")
     ap.add_argument("--memory-context-max-tokens", type=int, default=200000)
+    ap.add_argument("--keep-sections", default=None, help="comma list of notes,events,raw (E2 S1c)")
     args = ap.parse_args()
 
     client = model = None
@@ -266,6 +289,8 @@ def main() -> None:
                         if args.premise_check else None)
                 if args.only_noted and note is None:
                     continue
+                if args.keep_sections:
+                    mc = keep_sections(mc, set(args.keep_sections.split(",")))
                 if note is not None:
                     mc = [{"type": "text", "value": note}] + mc
                     mc, orig_tok, trunc_tok = truncate_memory_context(
@@ -275,7 +300,7 @@ def main() -> None:
                 system_prompt = next(m["content"] for m in r["messages"] if m["role"] == "system")
                 if args.fix_prompt and BACKSPACE_BOXED in system_prompt:
                     system_prompt = system_prompt.replace(BACKSPACE_BOXED, FIXED_BOXED); n_fixed += 1
-                if note is not None or args.fix_prompt:
+                if note is not None or args.fix_prompt or args.keep_sections:
                     r["messages"], r["prompt_messages"] = build_messages(
                         system_prompt=system_prompt, question_text=r["question_text"],
                         image_path=r["question_image"], memory_context=mc)

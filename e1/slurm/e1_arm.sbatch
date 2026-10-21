@@ -11,6 +11,8 @@
 #   ARM=b0r  : baseline rows unchanged, reader rerun -> run-to-run noise of the reader
 #   ARM=mid  : mid-thinking injection (mi = verdict, mn = verdict-free nudge) on P-any noted questions
 #   ARM=bud  : B1 prompt, only questions that hit the 20k cap in B0, rerun with a 40k budget (diagnostic)
+#   ARM=form : E2 S1c memory form (FORM=noraw|rawonly) on B1 contexts, all questions
+#   ARM=e2   : E2 retrieval arm (E2ARM, E2CTX, E2RET); reader rerun only on questions whose raw blocks changed
 #   ARM=pa / ps : P with note rule any / strict, reader rerun ONLY on noted questions
 #                 (unnoted prompts are identical to B1; merge with B1 outputs at analysis time)
 # Reader-only: the embedding server is not started. Reader outputs are cached per question, so a
@@ -19,7 +21,7 @@ set -uo pipefail
 # never "kill 0": that signals the whole process group, including this script
 killsrv() { for p in ${READER_PID:-} ${EMBED_PID:-}; do [ -n "$p" ] && [ "$p" != 0 ] && kill "$p" 2>/dev/null; done; return 0; }
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2; export E1
-ARM=${ARM:?set ARM=gate|b1|p}; BASE=$E1/runs/agentrunbook_r_small
+ARM=${ARM:?set ARM=gate|b1|p|...|e2}; BASE=$E1/runs/agentrunbook_r_small
 [ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a
 export READER_MODEL=Qwen/Qwen3.5-9B
 export LME_CONTROLLER_MODEL=Qwen/Qwen3.5-9B
@@ -94,6 +96,33 @@ case "$ARM" in
                --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
             wait $! || rc=$?
           done
+        done ;;
+  e2)   # E2 retrieval arm: reader rerun only where raw blocks differ from B1 (or queries were regenerated)
+        # needs E2ARM (folder name), E2CTX (dir with <dom>_contexts.jsonl), E2RET (dir with <dom>.jsonl)
+        DST=$E1/runs/${E2ARM:?}; rc=0
+        if [ ! -s "$DST/enterprise_small/rerun_ids.txt" ]; then
+          "$PY" e1/pipeline/make_prompt_rows.py --contexts "${E2CTX:?}" --retrieved "${E2RET:?}" --dst "$DST" &
+          wait $! || { killsrv; exit 1; }
+        fi
+        for d in web enterprise; do
+          ids=$(cat "$DST/${d}_small/rerun_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+             --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
+             --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
+          wait $! || rc=$?
+        done ;;
+  form) # E2 S1c: B1 contexts with only some memory sections (FORM=noraw keeps notes+events, FORM=rawonly keeps raw)
+        KEEP=notes,events; [ "${FORM:?}" = rawonly ] && KEEP=raw
+        DST=$E1/runs/s1_${FORM}_small; rc=0
+        if [ ! -s "$DST/enterprise_small/prompt_rows.jsonl" ]; then
+          "$PY" e1/pipeline/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --keep-sections $KEEP ${LIMIT:+--limit $LIMIT} &
+          wait $! || { killsrv; exit 1; }
+        fi
+        for d in web enterprise; do
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+             --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" \
+             --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 ${LIMIT:+--limit $LIMIT} &
+          wait $! || rc=$?
         done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
