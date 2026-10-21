@@ -73,6 +73,9 @@ def main() -> None:
     ap.add_argument("--arm", default="b1_small")
     ap.add_argument("--contexts", default=None, help="dir with <dom>_contexts.jsonl (pre-truncation) for an E2 arm")
     ap.add_argument("--out", default=str(E1 / "e2work/rounds/waterfall"))
+    ap.add_argument("--scores", default=None,
+                    help="jsonl with question_id, arm_correct (rule_compare --dump) when the arm has no judged per_question.jsonl; "
+                         "the reader context is then read from the arm's prompt_rows.jsonl")
     a = ap.parse_args()
     norm = _official_metrics()[0]
     out = Path(a.out).expanduser(); out.mkdir(parents=True, exist_ok=True)
@@ -89,14 +92,19 @@ def main() -> None:
                 if c["question_id"] in elig:
                     pre[c["question_id"]] = ctx_text(c["memory_context"], norm)
         rows = []
-        for r in iter_jsonl(E1 / f"runs/{a.arm}/{dom}_small/per_question.jsonl"):
+        if a.scores:
+            SC = {x["question_id"]: bool(x["arm_correct"]) for x in iter_jsonl(Path(a.scores).expanduser())}
+            src = E1 / f"runs/{a.arm}/{dom}_small/prompt_rows.jsonl"
+        else:
+            SC, src = None, E1 / f"runs/{a.arm}/{dom}_small/per_question.jsonl"
+        for r in iter_jsonl(src):
             q = r["question_id"]
-            if q not in elig:
+            if q not in elig or (SC is not None and q not in SC):
                 del r
                 continue
             ph = elig[q]
             reader = ctx_text(r["memory_context"], norm)
-            ok = bool(r["score_bool"])
+            ok = SC[q] if SC is not None else bool(r["score_bool"])
             truncated = bool(r.get("memory_context_was_truncated"))
             if not has_all(ph, store):
                 st = "1_not_in_store"
