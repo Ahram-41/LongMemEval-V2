@@ -104,7 +104,7 @@ case "$ARM" in
           "$PY" e1/pipeline/make_prompt_rows.py --contexts "${E2CTX:?}" --retrieved "${E2RET:?}" --dst "$DST" ${E2FLAGS:-} &
           wait $! || { killsrv; exit 1; }
         fi
-        for d in web enterprise; do
+        for d in ${E2DOMAINS:-web enterprise}; do   # E2DOMAINS lets two jobs split one arm by domain
           ids=$(cat "$DST/${d}_small/rerun_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
           "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
