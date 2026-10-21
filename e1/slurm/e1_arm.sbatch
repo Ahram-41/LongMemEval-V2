@@ -101,7 +101,7 @@ case "$ARM" in
         # needs E2ARM (folder name), E2CTX (dir with <dom>_contexts.jsonl), E2RET (dir with <dom>.jsonl)
         DST=$E1/runs/${E2ARM:?}; rc=0
         if [ ! -s "$DST/enterprise_small/rerun_ids.txt" ]; then
-          "$PY" e1/pipeline/make_prompt_rows.py --contexts "${E2CTX:?}" --retrieved "${E2RET:?}" --dst "$DST" &
+          "$PY" e1/pipeline/make_prompt_rows.py --contexts "${E2CTX:?}" --retrieved "${E2RET:?}" --dst "$DST" ${E2FLAGS:-} &
           wait $! || { killsrv; exit 1; }
         fi
         for d in web enterprise; do
@@ -122,6 +122,19 @@ case "$ARM" in
           "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 ${LIMIT:+--limit $LIMIT} &
+          wait $! || rc=$?
+        done ;;
+  pfuse) # E2 C: P-any premise note on top of an E2 arm, false-premise questions only (PSRC = source arm folder)
+        SRC=$E1/runs/${PSRC:?}; DST=$E1/runs/${PDST:?}; rc=0
+        if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
+          "$PY" e1/pipeline/derive_arm.py --src "$SRC" --dst "$DST" --premise-check --note-rule any --only-noted --ids-file "${PIDS:?}" &
+          wait $! || { killsrv; exit 1; }
+        fi
+        for d in web enterprise; do
+          ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+             --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
+             --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
         done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;

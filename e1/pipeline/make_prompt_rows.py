@@ -33,6 +33,11 @@ def main() -> None:
     ap.add_argument("--b1", default=str(E1 / "runs/b1_small"))
     ap.add_argument("--domains", default="web,enterprise")
     ap.add_argument("--memory-context-max-tokens", type=int, default=200000)
+    ap.add_argument("--only", choices=["all", "regenerated"], default="all",
+                    help="regenerated: write rows only for the 107 questions whose B0 context was truncated")
+    ap.add_argument("--section-order", default=None,
+                    help="e.g. raw,events,notes: reorder memory sections before the 200k truncation (E2 arm A)")
+    ap.add_argument("--force-rerun", action="store_true", help="rerun every selected question even if blocks equal B1's")
     a = ap.parse_args()
     from evaluation.harness import build_messages, truncate_memory_context
     for dom in a.domains.split(","):
@@ -44,7 +49,9 @@ def main() -> None:
         for qid, r in R.items():
             b0 = [(b["entry_id"], b["query"], b["rank"]) for b in Q[qid]["baseline_raw_blocks"]]
             new = [(b["entry_id"], b["query"], b["rank"]) for b in r["raw_blocks"]]
-            same = r["query_source"] == "parsed" and not Q[qid]["context_truncated"] and b0 == new
+            if a.only == "regenerated" and r["query_source"] != "regenerated":
+                continue
+            same = r["query_source"] == "parsed" and not Q[qid]["context_truncated"] and b0 == new and not a.force_rerun
             (reuse if same else rerun).append(qid)
             reasons[qid] = {"question_id": qid, "rerun": not same,
                             "reason": ("reuse: identical (entry, query, rank) sequence" if same else
@@ -65,7 +72,12 @@ def main() -> None:
                 if qid not in want:
                     del row
                     continue
-                mc, orig, trunc = truncate_memory_context(ctx[qid], max_tokens=a.memory_context_max_tokens, question_id=qid)
+                mc0 = ctx[qid]
+                if a.section_order:
+                    from e1.pipeline.derive_arm import split_sections
+                    secs = split_sections(mc0)
+                    mc0 = [it for name in a.section_order.split(",") for it in secs.get(name, [])]
+                mc, orig, trunc = truncate_memory_context(mc0, max_tokens=a.memory_context_max_tokens, question_id=qid)
                 system_prompt = next(m["content"] for m in row["messages"] if m["role"] == "system")
                 row["messages"], row["prompt_messages"] = build_messages(
                     system_prompt=system_prompt, question_text=row["question_text"],
@@ -77,6 +89,7 @@ def main() -> None:
                 row["e2_raw_block_ids"] = [b["entry_id"] for b in R[qid]["raw_blocks"]]
                 row["e2_query_source"] = R[qid]["query_source"]
                 row["e2_variant"] = R[qid]["variant"] + "@" + R[qid]["query_source_mode"]
+                row["e2_section_order"] = a.section_order or "notes,events,raw"
                 fp.write(json.dumps(row, ensure_ascii=True) + "\n")
                 n += 1
                 del row
@@ -87,7 +100,8 @@ def main() -> None:
         (dst / "rerun_ids.txt").write_text(",".join(sorted(rerun)))
         (dst / "reuse_ids.txt").write_text(",".join(sorted(reuse)))
         write_manifest(dst, inputs={"contexts": a.contexts, "retrieved": a.retrieved, "b1": a.b1},
-                       params={"memory_context_max_tokens": a.memory_context_max_tokens})
+                       params={"memory_context_max_tokens": a.memory_context_max_tokens, "only": a.only,
+                               "section_order": a.section_order, "force_rerun": a.force_rerun})
         print(f"[prompt_rows] {dom}: rerun {len(rerun)} (regenerated queries {sum(R[q]['query_source'] == 'regenerated' for q in rerun)}), "
               f"reuse B1 {len(reuse)} -> {dst}", flush=True)
 

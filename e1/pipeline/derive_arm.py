@@ -182,6 +182,17 @@ SECTION_TITLES = {
 }
 
 
+def split_sections(mc: list[dict]) -> dict[str, list[dict]]:
+    out, cur = {}, None
+    for it in mc:
+        if it.get("type") == "text":
+            for name, title in SECTION_TITLES.items():
+                if it["value"].startswith(title):
+                    cur = name
+        out.setdefault(cur, []).append(it)
+    return out
+
+
 def keep_sections(mc: list[dict], keep: set[str]) -> list[dict]:
     out, cur = [], None
     for it in mc:
@@ -217,6 +228,7 @@ def main() -> None:
                     help="after the concurrent run, time N checker calls one at a time (clean per-query latency)")
     ap.add_argument("--memory-context-max-tokens", type=int, default=200000)
     ap.add_argument("--keep-sections", default=None, help="comma list of notes,events,raw (E2 S1c)")
+    ap.add_argument("--ids-file", default=None, help="keep only these question ids (comma-separated file)")
     args = ap.parse_args()
 
     client = model = None
@@ -235,6 +247,9 @@ def main() -> None:
         rows = [json.loads(l) for l in open(src / "prompt_rows.jsonl") if l.strip()]
         if args.limit:
             rows = rows[: args.limit]
+        if args.ids_file:
+            keep_ids = {x for x in Path(args.ids_file).expanduser().read_text().split(",") if x}
+            rows = [r for r in rows if r["question_id"] in keep_ids]
         if args.ids_from_capped:
             capped = set()
             for l in open(src / "reader_outputs_cache.jsonl"):
