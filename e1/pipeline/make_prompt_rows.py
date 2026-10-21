@@ -40,12 +40,19 @@ def main() -> None:
         dst.mkdir(parents=True, exist_ok=True)
         Q = {r["question_id"]: r for r in iter_jsonl(E1 / f"cache/queries/{dom}.jsonl")}
         R = {r["question_id"]: r for r in iter_jsonl(Path(a.retrieved).expanduser() / f"{dom}.jsonl")}
-        rerun, reuse = [], []
+        rerun, reuse, reasons = [], [], {}
         for qid, r in R.items():
             b0 = [(b["entry_id"], b["query"], b["rank"]) for b in Q[qid]["baseline_raw_blocks"]]
             new = [(b["entry_id"], b["query"], b["rank"]) for b in r["raw_blocks"]]
             same = r["query_source"] == "parsed" and not Q[qid]["context_truncated"] and b0 == new
             (reuse if same else rerun).append(qid)
+            reasons[qid] = {"question_id": qid, "rerun": not same,
+                            "reason": ("reuse: identical (entry, query, rank) sequence" if same else
+                                       "regenerated queries (B0 context truncated / query missing)" if r["query_source"] == "regenerated"
+                                       else "same block set, different order/rank" if {x[0] for x in b0} == {x[0] for x in new}
+                                       else "different blocks"),
+                            "b1_blocks": [x[0] for x in b0], "arm_blocks": [x[0] for x in new],
+                            "n_shared_blocks": len({x[0] for x in b0} & {x[0] for x in new})}
         want = set(rerun)
         ctx = {}
         for c in iter_jsonl(Path(a.contexts).expanduser() / f"{dom}_contexts.jsonl"):
@@ -74,6 +81,9 @@ def main() -> None:
                 n += 1
                 del row
         assert n == len(rerun), (n, len(rerun))
+        with open(dst / "rerun_reasons.jsonl", "w") as rf:
+            for qid in sorted(reasons):
+                rf.write(json.dumps(reasons[qid]) + "\n")
         (dst / "rerun_ids.txt").write_text(",".join(sorted(rerun)))
         (dst / "reuse_ids.txt").write_text(",".join(sorted(reuse)))
         write_manifest(dst, inputs={"contexts": a.contexts, "retrieved": a.retrieved, "b1": a.b1},

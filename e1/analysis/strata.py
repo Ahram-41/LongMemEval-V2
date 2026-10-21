@@ -120,6 +120,10 @@ def main() -> None:
         d = E1 / "e2work/strata"
         d.mkdir(parents=True, exist_ok=True)
         (d / f"{dom}.json").write_text(json.dumps(out, indent=0))
+        # per-entry normalised slice text / embedded prefix, reused by the per-phrase hit dump
+        import pickle
+        (d / f"{dom}_entrytext.pkl").write_bytes(pickle.dumps(
+            {"entry_ids": st.entry_ids, "full_norm": full_norm, "emb_norm": emb_norm, "ntok": ntok}, protocol=pickle.HIGHEST_PROTOCOL))
         from collections import Counter
         for k in ["pos", "plen", "rarity", "anchors", "qidf"]:
             print(f"[strata] {dom} {k}: {dict(Counter(v[k] for v in out.values() if k in v))}")

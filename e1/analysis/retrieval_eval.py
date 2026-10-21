@@ -224,8 +224,10 @@ def fisher(a: int, b: int, c: int, d: int) -> float:
     return min(1.0, p)
 
 
-def do_table(domains: list[str], variants: list[str], source: str, which: str, ref: str = "V", out_json: Path | None = None) -> dict:
+def do_table(domains: list[str], variants: list[str], source: str, which: str, ref: str = "V", out_json: Path | None = None,
+             keep_L: bool = False) -> dict:
     allres = {}
+    allL = {}
     for dom in domains:
         need = sorted({m for v in variants + [ref] for m in base_methods(v)})
         do_score(dom, list(dict.fromkeys(need)))
@@ -258,10 +260,115 @@ def do_table(domains: list[str], variants: list[str], source: str, which: str, r
             strata_report(dom, L, variants, ref, qids, key)
         allres[dom] = {v: summarize(L[v], qids, M) for v in L}
         allres[dom]["_labels"] = {v: {q: {k: L[v][q][k] for k in L[v][q] if k != "blocks"} for q in qids} for v in L}
+        allres[dom]["_blocks"] = {v: {q: L[v][q]["blocks"] for q in qids} for v in L}
+        allL[dom] = (L, qids)
     if out_json:
         out_json.parent.mkdir(parents=True, exist_ok=True)
         out_json.write_text(json.dumps(allres))
+    if keep_L:
+        allres["_L"] = allL
     return allres
+
+
+# ---------------------------------------------------------------- rich logging (rounds, grid, dumps)
+class Tee:
+    def __init__(self, *fps):
+        self.fps = fps
+
+    def write(self, x):
+        for f in self.fps:
+            f.write(x)
+
+    def flush(self):
+        for f in self.fps:
+            f.flush()
+
+
+def write_grid(path: Path, round_name: str, which: str, ref: str, allL: dict) -> None:
+    """One row per domain x variant x proxy x stratum(label), incl. the 2x2 vs ref."""
+    import csv
+    new = not path.exists()
+    with open(path, "a", newline="") as fp:
+        w = csv.writer(fp, delimiter="\t")
+        if new:
+            w.writerow(["round", "domain", "set", "variant", "ref", "proxy", "stratum", "label", "covered", "eligible",
+                        "both", "gain", "loss", "neither", "net", "ci_lo", "ci_hi", "sign_p"])
+        for dom, (L, qids) in allL.items():
+            sp = E1 / "e2work/strata" / f"{dom}.json"
+            ST = json.loads(sp.read_text()) if sp.exists() else {}
+            M = meta(dom)
+            for v in L:
+                for key in ["ans", "anc"]:
+                    groups = [("ALL", "ALL", qids)]
+                    for k in STRATA:
+                        if k == "qtype":
+                            labs = sorted({M[q]["question_type"] for q in qids})
+                            groups += [("qtype", lab, [q for q in qids if M[q]["question_type"] == lab]) for lab in labs]
+                        else:
+                            labs = sorted({ST[q][k] for q in qids if k in ST.get(q, {})})
+                            groups += [(k, lab, [q for q in qids if ST.get(q, {}).get(k) == lab]) for lab in labs]
+                    for k, lab, S in groups:
+                        el = [q for q in S if key in L[v][q]]
+                        if not el:
+                            continue
+                        r = two_by_two(L[v], L[ref], S, key)
+                        w.writerow([round_name, dom, which, v, ref, key, k, lab, sum(bool(L[v][q][key]) for q in el), len(el),
+                                    r["both"], r["gain"], r["loss"], r["neither"], r["net"], f"{r['ci'][0]:.4f}",
+                                    f"{r['ci'][1]:.4f}", f"{r['p']:.4f}"])
+
+
+def dump_rich(path: Path, dom: str, variant: str, source: str, qids: list[str], bank, C: Content,
+              methods=("V", "Vfull", "T:basic", "G:both:basic"), topn: int = 50) -> None:
+    """Per-question record for later analyses without rerunning (see e2work/README.md)."""
+    import pickle
+    from e1.pipeline.retrieve import frozen_bundles as fb, queries_for
+    from e1.retrieval.base import official_topk
+    B, M = fb(dom), meta(dom)
+    sp = E1 / "e2work/strata"
+    ST = json.loads((sp / f"{dom}.json").read_text()) if (sp / f"{dom}.json").exists() else {}
+    ET = pickle.loads((sp / f"{dom}_entrytext.pkl").read_bytes()) if (sp / f"{dom}_entrytext.pkl").exists() else None
+    eidx = {e: i for i, e in enumerate(ET["entry_ids"])} if ET else {}
+    var, src = (variant.split("@") + [source])[:2]
+    rows = {r["question_id"]: r for r in do_select(dom, var, src, None, bank=bank, ids=C.ids, sim_variant="V")}
+    with open(path, "w") as fp:
+        for q in qids:
+            m, r = M[q], rows[q]
+            blocks = [b["entry_id"] for b in r["raw_blocks"]]
+            per_query = []
+            for qq in r["queries"]:
+                rec = {"query": qq}
+                for meth in list(methods) + [var]:
+                    try:
+                        sc = bank.scores(meth, qq)
+                    except (FileNotFoundError, KeyError):
+                        continue
+                    rec[meth] = [[C.ids[i], rk, round(float(sc[i]), 6)] for rk, i in enumerate(official_topk(sc, topn), start=1)]
+                per_query.append(rec)
+            ph = answer_phrases(m) or []
+            hits = []
+            for p in ph:
+                for e in blocks:
+                    if f" {p} " in C.norm[e]:
+                        h = {"phrase": p, "entry_id": e}
+                        if ET:
+                            full = ET["full_norm"][eidx[e]]
+                            h["offset_in_slice_norm"] = full.find(f" {p} ")
+                            h["in_embedded_prefix"] = f" {p} " in ET["emb_norm"][eidx[e]]
+                            h["slice_tokens"] = ET["ntok"][eidx[e]]
+                        hits.append(h)
+            lab = label_question(m, blocks, C)
+            fp.write(json.dumps({
+                "question_id": q, "domain": dom, "question_type": m["question_type"],
+                "premise": "false-premise" if m["is_abstention_problem"] else "normal",
+                "query_source": B[q]["query_source"], "query_source_mode": src, "variant": var,
+                "queries": r["queries"], "per_query_topk": per_query, "merged_raw_blocks": r["raw_blocks"],
+                "answer_phrases": ph, "phrase_hits": hits, "anchors": anchors(m["question_text"]),
+                "coverage": lab, "strata": ST.get(q, {})}, ensure_ascii=True) + "\n")
+
+
+def git_info() -> dict:
+    from e1.common.manifest import git_version
+    return git_version()
 
 
 def main() -> None:
@@ -273,11 +380,35 @@ def main() -> None:
     ap.add_argument("--set", default="complete", choices=["complete", "all"])
     ap.add_argument("--ref", default="V")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--round", default=None, help="write ~/e1/e2work/rounds/<round>/{config.json,table.txt,grid.tsv,labels.json}")
+    ap.add_argument("--note", default="", help="what changed in this round and why (stored in config.json)")
+    ap.add_argument("--dump-variants", default="", help="comma list: also write rich per-question jsonl for these")
     a = ap.parse_args()
     if a.what == "calibrate":
         do_calibrate()
-    else:
-        do_table(a.domains.split(","), a.variants.split(","), a.source, a.set, a.ref, Path(a.json).expanduser() if a.json else None)
+        return
+    variants = a.variants.split(",")
+    if not a.round:
+        do_table(a.domains.split(","), variants, a.source, a.set, a.ref, Path(a.json).expanduser() if a.json else None)
+        return
+    import contextlib, hashlib
+    d = E1 / "e2work/rounds" / a.round
+    d.mkdir(parents=True, exist_ok=True)
+    cfg = {"variants": variants, "source": a.source, "set": a.set, "ref": a.ref, "domains": a.domains}
+    cfg_hash = hashlib.sha1(json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
+    (d / "config.json").write_text(json.dumps({**cfg, "config_hash": cfg_hash, "git": git_info(), "argv": sys.argv,
+                                               "note": a.note}, indent=1))
+    with open(d / "table.txt", "w") as tf, contextlib.redirect_stdout(Tee(sys.stdout, tf)):
+        print(f"round {a.round}  config {cfg_hash}  git {git_info()}  note: {a.note}")
+        res = do_table(a.domains.split(","), variants, a.source, a.set, a.ref, d / "labels.json", keep_L=True)
+    write_grid(d / "grid.tsv", a.round, a.set, a.ref, res.pop("_L"))
+    for v in [x for x in a.dump_variants.split(",") if x]:
+        for dom in a.domains.split(","):
+            C, bank = Content(dom), ScoreBank(dom)
+            qids = question_set(dom, a.set)
+            C.load(set().union(*[set(b["entry_id"] for b in r["raw_blocks"]) for r in do_select(dom, v.split("@")[0], (v.split("@") + [a.source])[1], None, bank=bank, ids=C.ids, sim_variant=None)]))
+            dump_rich(d / f"dump_{v.replace(':', '_').replace('+', '-')}_{dom}.jsonl", dom, v, a.source, qids, bank, C)
+    print(f"[round] wrote {d}")
 
 
 if __name__ == "__main__":
