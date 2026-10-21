@@ -4,21 +4,16 @@
 Compares, on the same questions, B0 (20k, buggy prompt), B1 (20k, fixed prompt) when available,
 and bud (40k, fixed prompt). Question: does more thinking budget rescue capped false-premise
 questions (slow convergence) or not (stuck)?
-Usage: python e1/budget_probe.py ~/e1/runs
+Usage: python e1/oneoff/budget_probe.py ~/e1/runs
 """
-import json, sys
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from e1.common.io import SCORE_KEEP as KEEP, load_rows  # noqa: E402
 
 root = Path(sys.argv[1]).expanduser()
-KEEP = ("question_id", "score_bool", "is_unknown", "is_abstention_problem", "question_type", "usage", "memory_query_duration_seconds")
 def load(arm):
-    out = {}
-    for d in ["web_small", "enterprise_small"]:
-        p = root / arm / d / "per_question.jsonl"
-        if p.exists():
-            for l in open(p):
-                r = json.loads(l); out[r["question_id"]] = {k: r.get(k) for k in KEEP}; del r
-    return out
+    return load_rows(root, arm, KEEP)
 b0, b1, bud = load("agentrunbook_r_small"), load("b1_small"), load("bud_small")
 toks = lambda r: (r.get("usage") or {}).get("completion_tokens", 0)
 print(f"bud questions scored: {len(bud)}")

@@ -10,64 +10,34 @@ check which anchors appear in it.
   none    : no anchor appears in any block
   no-anchor : the question names no quoted term (proxy not applicable)
 Cross-tabs the label with correctness for the given arms.
-Usage: python e1/page_coverage.py ~/e1/runs agentrunbook_r_small b1_small pa_merged_small
+Usage: python e1/analysis/page_coverage.py ~/e1/runs agentrunbook_r_small b1_small pa_merged_small
 The first arm supplies the retrieved context (identical across arms by construction).
 """
-import json
-import re
 import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-QUOTED = re.compile(r'"([^"]{2,80})"|`([^`]{2,80})`|“([^”]{2,80})”|\'([^\']{3,80})\'')
-BLOCK_SPLIT = re.compile(r"(?=Raw state result \d+)")
-
-
-def anchors(question: str) -> list[str]:
-    out = []
-    for m in QUOTED.finditer(question):
-        t = next(g for g in m.groups() if g).strip().lower()
-        if t and t not in out:
-            out.append(t)
-    return out
-
-
-def raw_blocks(memory_context: list[dict]) -> list[str]:
-    text = "\n".join(x["value"] for x in memory_context if x.get("type") == "text")
-    blocks = [b for b in BLOCK_SPLIT.split(text) if b.startswith("Raw state result")]
-    return [b.lower() for b in blocks]
-
-
-def label(q: str, ctx: list[dict]) -> str:
-    a = anchors(q)
-    if not a:
-        return "no-anchor"
-    blocks = raw_blocks(ctx)
-    if any(all(x in b for x in a) for b in blocks):
-        return "full"
-    if any(any(x in b for x in a) for b in blocks):
-        return "partial"
-    return "none"
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from e1.common.anchors import coverage_label as label  # noqa: E402
+from e1.common.io import DOMAINS, iter_jsonl  # noqa: E402
 
 
 def main():
     root = Path(sys.argv[1]).expanduser()
     ref, arms = sys.argv[2], sys.argv[3:]
     lab, is_abs, qtype = {}, {}, {}
-    for d in ["web_small", "enterprise_small"]:
-        for line in open(root / ref / d / "per_question.jsonl"):
-            r = json.loads(line)
+    for d in DOMAINS:
+        for r in iter_jsonl(root / ref / d / "per_question.jsonl"):
             lab[r["question_id"]] = label(r["question_text"], r["memory_context"])
             is_abs[r["question_id"]] = r["is_abstention_problem"]
             qtype[r["question_id"]] = r["question_type"]
             del r
     score = defaultdict(dict)
     for a in [ref] + arms:
-        for d in ["web_small", "enterprise_small"]:
+        for d in DOMAINS:
             p = root / a / d / "per_question.jsonl"
             if p.exists():
-                for line in open(p):
-                    r = json.loads(line)
+                for r in iter_jsonl(p):
                     score[a][r["question_id"]] = r["score_bool"]
                     del r
     for name, sel in [("trap (false-premise)", True), ("normal", False)]:

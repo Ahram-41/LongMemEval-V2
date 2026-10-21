@@ -24,11 +24,10 @@ import os
 import sys
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
-sys.path.insert(0, str(REPO / "e1"))
 from evaluation.qa_eval_metrics import extract_boxed_answer, is_unknown  # noqa: E402
-from derive_arm import note_from_verdict  # noqa: E402
+from e1.pipeline.derive_arm import note_from_verdict  # noqa: E402
 
 MI_TEMPLATE = (
     "\n\nWait. Before going further, let me use the automatic premise check of the retrieved memory. "

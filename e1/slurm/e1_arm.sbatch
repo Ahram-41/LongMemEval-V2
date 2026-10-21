@@ -31,24 +31,24 @@ resubmit() {
   killsrv
   if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[arm] resubmit cap reached"; exit 1; fi
   echo "[arm] time limit: resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
-  cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL -p "$SLURM_JOB_PARTITION" --gpus="$SBATCH_GPUS_RESUB" --time="$SBATCH_TIME_RESUB" -J "$SLURM_JOB_NAME" "$REPO/e1/e1_arm.sbatch"; exit 0
+  cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL -p "$SLURM_JOB_PARTITION" --gpus="$SBATCH_GPUS_RESUB" --time="$SBATCH_TIME_RESUB" -J "$SLURM_JOB_NAME" "$REPO/e1/slurm/e1_arm.sbatch"; exit 0
 }
 trap resubmit TERM
 export NO_EMBED=1
-source "$REPO/e1/serve_vllm.sh" || { echo "[arm] vLLM failed to start"; exit 1; }
+source "$REPO/e1/slurm/serve_vllm.sh" || { echo "[arm] vLLM failed to start"; exit 1; }
 cd "$REPO"
 case "$ARM" in
-  gate) "$PY" e1/derive_arm.py --src "$BASE" --dst "$E1/runs/p_small" --premise-check --check-only --latency-sample ${LAT_SAMPLE:-10} ${LIMIT:+--limit $LIMIT}
-        "$PY" e1/gate_summary.py "$BASE" "$E1/runs/p_small"; rc=$? ;;
+  gate) "$PY" e1/pipeline/derive_arm.py --src "$BASE" --dst "$E1/runs/p_small" --premise-check --check-only --latency-sample ${LAT_SAMPLE:-10} ${LIMIT:+--limit $LIMIT}
+        "$PY" e1/analysis/gate_summary.py "$BASE" "$E1/runs/p_small"; rc=$? ;;
   b1|p|b0r) DST=$E1/runs/${ARM}_small
         FLAGS="--fix-prompt"; [ "$ARM" = p ] && FLAGS="$FLAGS --premise-check"; [ "$ARM" = b0r ] && FLAGS=""
         if [ ! -s "$DST/enterprise_small/prompt_rows.jsonl" ]; then
-          "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" $FLAGS ${LIMIT:+--limit $LIMIT} &
+          "$PY" e1/pipeline/derive_arm.py --src "$BASE" --dst "$DST" $FLAGS ${LIMIT:+--limit $LIMIT} &
           wait $! || { killsrv; exit 1; }
         fi
         rc=0
         for d in web enterprise; do
-          "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 ${LIMIT:+--limit $LIMIT} &
           wait $! || rc=$?
@@ -60,36 +60,36 @@ case "$ARM" in
         DST=$E1/runs/${ARM}_small; rc=0
         mkdir -p "$DST"; for d in web enterprise; do mkdir -p "$DST/${d}_small"; cp -n "$E1/runs/p_small/${d}_small/premise_check.jsonl" "$DST/${d}_small/" 2>/dev/null; done
         if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
-          "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --premise-check --note-rule $RULE --only-noted &
+          "$PY" e1/pipeline/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --premise-check --note-rule $RULE --only-noted &
           wait $! || { killsrv; exit 1; }
         fi
         for d in web enterprise; do
           ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
-          "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
         done ;;
   bud)  DST=$E1/runs/bud_small; rc=0
         if [ ! -s "$DST/web_small/noted_ids.txt" ]; then
-          "$PY" e1/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --ids-from-capped &
+          "$PY" e1/pipeline/derive_arm.py --src "$BASE" --dst "$DST" --fix-prompt --ids-from-capped &
           wait $! || { killsrv; exit 1; }
         fi
         for d in web enterprise; do
           ids=$(cat "$DST/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
-          "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+          "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
              --data-root "$DATA_ROOT" --output-dir "$DST/${d}_small" --question-ids "$ids" --max-completion-tokens 40000 \
              --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
           wait $! || rc=$?
         done ;;
   mid)  rc=0
-        "$PY" e1/check_continue.py || true
+        "$PY" e1/oneoff/check_continue.py || true
         for A in ${MID_ARMS:-mi mn}; do
-          "$PY" e1/mid_inject.py --arm $A --k ${MID_K:-12000} ${LIMIT:+--limit $LIMIT} &
+          "$PY" e1/oneoff/mid_inject.py --arm $A --k ${MID_K:-12000} ${LIMIT:+--limit $LIMIT} &
           wait $! || { rc=1; continue; }
           for d in web enterprise; do
             ids=$(cat "$E1/runs/${A}_small/${d}_small/noted_ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
-            "$PY" e1/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+            "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
                --data-root "$DATA_ROOT" --output-dir "$E1/runs/${A}_small/${d}_small" --question-ids "$ids" \
                --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
             wait $! || rc=$?

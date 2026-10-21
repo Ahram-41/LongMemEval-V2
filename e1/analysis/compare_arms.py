@@ -1,42 +1,23 @@
 #!/usr/bin/env python3
 """Paired comparison of E1 arms on LME-V2 Small (same questions, same retrieval).
 
-Usage: python e1/compare_arms.py ~/e1/runs  agentrunbook_r_small b0r_small b1_small p_small
+Usage: python e1/analysis/compare_arms.py ~/e1/runs  agentrunbook_r_small b0r_small b1_small p_small
 The first arm is the reference. For every other arm it prints, per subset
 (all / normal / false-premise / per question_type):
   accuracy, delta vs reference, exact two-sided McNemar p on discordant pairs,
   cap-hit rate (completion == 20000 tokens), UNKNOWN rate,
 plus mean query latency. Arms with a missing per_question.jsonl are skipped.
 """
-import json
-import math
 import sys
 from pathlib import Path
 
-CAP = 20000
-KEEP = ("question_id", "score_bool", "is_unknown", "is_abstention_problem", "question_type", "usage", "memory_query_duration_seconds")
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from e1.common.io import CAP, SCORE_KEEP as KEEP, load_rows  # noqa: E402
+from e1.common.stats import mcnemar_exact  # noqa: E402
 
 
 def load(run_root: Path, arm: str):
-    rows = {}
-    for d in ["web_small", "enterprise_small"]:
-        p = run_root / arm / d / "per_question.jsonl"
-        if not p.exists():
-            return None
-        for line in open(p):
-            r = json.loads(line)
-            rows[r["question_id"]] = {k: r.get(k) for k in KEEP}
-            del r
-    return rows
-
-
-def mcnemar_exact(b: int, c: int) -> float:
-    n = b + c
-    if n == 0:
-        return 1.0
-    k = min(b, c)
-    tail = sum(math.comb(n, i) for i in range(0, k + 1)) / 2 ** n
-    return min(1.0, 2 * tail)
+    return load_rows(run_root, arm, KEEP, require_all=True)
 
 
 def stats(rows, ids):

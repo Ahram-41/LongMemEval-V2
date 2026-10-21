@@ -31,18 +31,18 @@ resubmit() {
   killsrv
   if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[sbatch] resubmit cap $RESUBMIT_MAX reached; NOT resubmitting"; exit 1; fi
   echo "[sbatch] time limit, resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
-  cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL "$REPO/e1/e1_baseline.sbatch"; exit 0
+  cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL "$REPO/e1/slurm/e1_baseline.sbatch"; exit 0
 }
 trap resubmit TERM
 
-source "$REPO/e1/serve_vllm.sh" || { echo "[sbatch] vLLM failed to start"; exit 1; }
+source "$REPO/e1/slurm/serve_vllm.sh" || { echo "[sbatch] vLLM failed to start"; exit 1; }
 nvidia-smi --query-gpu=memory.used,memory.total --format=csv
 
 cd "$REPO"
 status=0
 for d in $DOMAINS; do
   out=$E1/runs/${RUN_TAG}${LIMIT:+_limit$LIMIT}${SMOKE_TRAJ:+_traj$SMOKE_TRAJ}/${d}_small
-  "$LME_PY" e1/run_e1.py --index-root "$E1/index" \
+  "$LME_PY" e1/pipeline/run_e1.py --index-root "$E1/index" \
      --method "$METHOD" --domain "$d" --tier small \
      --data-root "$DATA_ROOT" --output-dir "$out" \
      --reader-max-concurrent-requests ${READER_MAX_SEQS:-8} --prompt-build-max-workers 8 \

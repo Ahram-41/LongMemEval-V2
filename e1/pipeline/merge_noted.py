@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Build a full 451-question arm from B1 plus an arm that reran only noted questions.
 
-Usage: python e1/merge_noted.py ~/e1/runs b1_small pa_small pa_merged_small
+Usage: python e1/pipeline/merge_noted.py ~/e1/runs b1_small pa_small pa_merged_small
 For each domain: rows = B1 per_question.jsonl, with every question present in the
 noted arm's per_question.jsonl replaced by the noted arm's row. Valid because the
 unnoted prompts are byte-identical to B1's (only the system prompt fix is applied).

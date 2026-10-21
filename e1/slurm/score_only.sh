@@ -3,7 +3,7 @@
 # prompt_rows.jsonl and reader_outputs_cache.jsonl, so no vLLM/GPU is needed.
 # transformers 5.x cannot import on CPU-only nodes ("Cannot access accelerator"), so run on the
 # cheapest GPU class; the GPU is not used for compute:
-#   sbatch -p gpu --gpus=nv:1 -c 4 --mem=32G --time=00:45:00 -J e1-score -o %x.%j.log --wrap "bash $HOME/e1/LongMemEval-V2/e1/score_only.sh"
+#   sbatch -p gpu --gpus=nv:1 -c 4 --mem=32G --time=00:45:00 -J e1-score -o %x.%j.log --wrap "bash $HOME/e1/LongMemEval-V2/e1/slurm/score_only.sh"
 set -euo pipefail
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2
 METHOD=${METHOD:-agentrunbook_r}; RUN_TAG=${RUN_TAG:-${METHOD}_small}; DOMAINS=${DOMAINS:-"web enterprise"}
@@ -16,7 +16,7 @@ for d in $DOMAINS; do
   out=$E1/runs/$RUN_TAG/${d}_small
   for f in prompt_rows.jsonl reader_outputs_cache.jsonl; do [ -s "$out/$f" ] || { echo "$d: missing $out/$f"; exit 3; }; done
   rm -f "$out/aggregated_metrics.json"
-  "$PY" e1/run_e1.py --index-root "$E1/index" --method "$METHOD" --domain "$d" --tier small \
+  "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method "$METHOD" --domain "$d" --tier small \
      --data-root "$DATA_ROOT" --output-dir "$out" --reader-max-concurrent-requests 8 --prompt-build-max-workers 8
 done
 "$PY" leaderboard/combine_aggregated_metrics.py \

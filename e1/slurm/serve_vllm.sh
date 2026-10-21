@@ -1,6 +1,6 @@
 #!/bin/bash
 # Start Qwen3-Embedding-8B (port 8114) and Qwen3.5-9B reader (port 8023) on the current GPU.
-# Usage: source e1/serve_vllm.sh   (exports EMBED_PID, READER_PID; waits until both are healthy)
+# Usage: source e1/slurm/serve_vllm.sh   (exports EMBED_PID, READER_PID; waits until both are healthy)
 set -u
 E1=${E1:-$HOME/e1}
 LOGDIR=${LOGDIR:-$E1/logs}; mkdir -p "$LOGDIR"

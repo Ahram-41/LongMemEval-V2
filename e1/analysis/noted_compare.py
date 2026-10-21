@@ -1,37 +1,30 @@
 #!/usr/bin/env python3
 """Compare arms on the P-any noted questions only (paired, exact McNemar), split by
 false-premise / normal, plus cap-hit rate and, for mid-injection arms, how many were injected.
-Usage: python e1/noted_compare.py ~/e1/runs b1_small pa_small mi_small mn_small
+Usage: python e1/analysis/noted_compare.py ~/e1/runs b1_small pa_small mi_small mn_small
 The first arm is the reference. Rows for B1 come from the full run; noted arms only hold noted rows."""
-import json, math, sys
+import sys
 from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from e1.common.io import DOMAINS, capped as cap, iter_jsonl, load_rows  # noqa: E402
+from e1.common.stats import mcnemar_exact as mcn  # noqa: E402
 root = Path(sys.argv[1]).expanduser(); arms = sys.argv[2:]
 KEEP = ("question_id", "score_bool", "is_abstention_problem", "usage")
 def load(arm):
-    out = {}
-    for d in ["web_small", "enterprise_small"]:
-        p = root / arm / d / "per_question.jsonl"
-        if p.exists():
-            for l in open(p):
-                r = json.loads(l); out[r["question_id"]] = {k: r.get(k) for k in KEEP}; del r
-    return out
+    return load_rows(root, arm, KEEP)
 def inj(arm):
     s = {}
-    for d in ["web_small", "enterprise_small"]:
+    for d in DOMAINS:
         p = root / arm / d / "mid_inject_log.jsonl"
         if p.exists():
-            for l in open(p):
-                x = json.loads(l); s[x["question_id"]] = x
+            for x in iter_jsonl(p):
+                s[x["question_id"]] = x
     return s
 ids = []
-for d in ["web_small", "enterprise_small"]:
+for d in DOMAINS:
     ids += [x for x in (root / "pa_small" / d / "noted_ids.txt").read_text().split(",") if x]
 D = {a: load(a) for a in arms}; ref = arms[0]
 ids = [q for q in ids if all(q in D[a] for a in arms)]
-def mcn(b, c):
-    n = b + c
-    return 1.0 if n == 0 else min(1.0, 2 * sum(math.comb(n, i) for i in range(min(b, c) + 1)) / 2 ** n)
-cap = lambda r: (r.get("usage") or {}).get("completion_tokens", 0) >= 20000
 print(f"noted questions with all arms present: {len(ids)}")
 for name, sel in [("false-premise", True), ("normal", False), ("all noted", None)]:
     S = [q for q in ids if sel is None or D[ref][q]["is_abstention_problem"] == sel]

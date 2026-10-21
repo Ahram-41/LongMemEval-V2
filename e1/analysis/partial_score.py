@@ -8,7 +8,7 @@ Writes <run_dir>/partial_rule_scores.jsonl (one row per scored question) and pri
 import json, sys
 from collections import defaultdict
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from evaluation.qa_eval_metrics import eval_from_spec, eval_name, score_to_bool  # noqa: E402
 
 CAT = {"static-environment": "static", "dynamic-environment": "dynamic", "procedure": "workflow",

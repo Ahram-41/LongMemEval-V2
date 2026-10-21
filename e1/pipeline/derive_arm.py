@@ -30,7 +30,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-REPO = Path(__file__).resolve().parents[1]
+REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 BACKSPACE_BOXED = "\x08oxed{}"
@@ -130,8 +130,9 @@ def run_check(client, model: str, row: dict, args) -> dict:
     return v
 
 
-# Identical to the frozen rule in e1/strict_rule.py (committed 5894287 before enterprise was examined).
-QUOTED = re.compile(r'"([^"]{2,80})"|`([^`]{2,80})`|\u201c([^\u201d]{2,80})\u201d|\'([^\']{3,80})\'')
+# QUOTED / quoted_terms: identical to the frozen rule in e1/oneoff/strict_rule.py (committed 5894287
+# before enterprise was examined); now shared via e1/common/anchors.py.
+from e1.common.anchors import QUOTED, quoted_terms  # noqa: E402,F401
 
 
 NOTE_NF_TEMPLATE = """## Premise check (automatic; may be wrong)
@@ -142,10 +143,6 @@ Check the evidence below. If the relevant page or form is covered and the elemen
 premise is probably wrong: explain inside \\boxed{{}} why the question is flawed. If the memory simply does not
 cover that page, answer from the evidence you have.
 """
-
-
-def quoted_terms(q: str) -> set:
-    return {next(g for g in m.groups() if g).strip().lower() for m in QUOTED.finditer(q)}
 
 
 def note_from_verdict(v: dict, question: str = "", rule: str = "any") -> str | None:

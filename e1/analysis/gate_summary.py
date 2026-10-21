@@ -3,7 +3,7 @@
 
 Joins <arm>/<dom>_small/premise_check.jsonl with the baseline per_question.jsonl
 (labels used only here, for evaluation; the checker never saw them).
-Usage: python e1/gate_summary.py ~/e1/runs/agentrunbook_r_small ~/e1/runs/p_small
+Usage: python e1/analysis/gate_summary.py ~/e1/runs/agentrunbook_r_small ~/e1/runs/p_small
 """
 import json, statistics, sys
 from collections import Counter
