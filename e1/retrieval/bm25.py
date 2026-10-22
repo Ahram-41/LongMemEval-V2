@@ -32,6 +32,20 @@ def tokenize(text: str, mode: str = "basic") -> list[str]:
     return WORD.findall(text.lower())
 
 
+def build_index(texts, tokenizer: str) -> dict:
+    post: dict[str, tuple[list, list]] = {}
+    dl = np.zeros(len(texts), dtype=np.float64)
+    for i, t in enumerate(texts):
+        c = Counter(tokenize(t, tokenizer))
+        dl[i] = sum(c.values())
+        for term, tf in c.items():
+            p = post.get(term)
+            if p is None:
+                post[term] = p = ([], [])
+            p[0].append(i); p[1].append(tf)
+    return {"dl": dl, "post": {t: (np.array(a, np.int32), np.array(f, np.float32)) for t, (a, f) in post.items()}}
+
+
 class BM25(Retriever):
     name = "T"
 
@@ -42,22 +56,24 @@ class BM25(Retriever):
             d = pickle.loads(path.read_bytes())
         else:
             assert store.texts is not None, "EntryStore.load(with_text=True) needed to build the index"
-            post: dict[str, tuple[list, list]] = {}
-            dl = np.zeros(len(store), dtype=np.float64)
-            for i, t in enumerate(store.texts):
-                c = Counter(tokenize(t, tokenizer))
-                dl[i] = sum(c.values())
-                for term, tf in c.items():
-                    p = post.get(term)
-                    if p is None:
-                        post[term] = p = ([], [])
-                    p[0].append(i); p[1].append(tf)
-            d = {"dl": dl, "post": {t: (np.array(a, np.int32), np.array(f, np.float32)) for t, (a, f) in post.items()}}
+            d = build_index(store.texts, tokenizer)
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(pickle.dumps(d, protocol=pickle.HIGHEST_PROTOCOL))
+        self._set(d)
+
+    def _set(self, d: dict) -> None:
         self.dl, self.post = d["dl"], d["post"]
         self.N = len(self.dl)
-        self.norm = k1 * (1 - b + b * self.dl / self.dl.mean())
+        mean = self.dl.mean() if self.N and self.dl.mean() > 0 else 1.0
+        self.norm = self.k1 * (1 - self.b + self.b * self.dl / mean)
+
+    @classmethod
+    def from_texts(cls, texts: list[str], tokenizer: str = "camel", k1: float = 1.2, b: float = 0.75) -> "BM25":
+        """In-memory index over a small corpus (E3: one LongMemEval_S haystack); same formula, no cache."""
+        self = cls.__new__(cls)
+        self.tok, self.k1, self.b = tokenizer, k1, b
+        self._set(build_index(texts, tokenizer))
+        return self
 
     def idf(self, term: str) -> float:
         p = self.post.get(term)
