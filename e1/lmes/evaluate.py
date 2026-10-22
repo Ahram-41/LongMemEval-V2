@@ -50,6 +50,10 @@ FUSIONS = ["rrf10", "rrf60"] + [f"w{w:g}" for w in WGRID if 0 < w < 1]
 REPO = Path(__file__).resolve().parents[2]
 FROZEN = REPO / "e1/lmes/E3_FROZEN.json"
 METRICS = [f"all@{k}" for k in KS] + [f"any@{k}" for k in KS] + [f"frac@{k}" for k in KS] + ["turn_all@10", "turn_any@10"]
+# Supplementary set, added after the BM25 dev result and before any dense result (E3 log 12:36); reported
+# separately, never used by the R1-R4 verdicts.
+SUPP_KS, SUPP_TURN_KS = (1, 3), (5, 10, 20)
+SUPP = [f"{a}@{k}" for k in SUPP_KS for a in ("all", "any")] + [f"turn_{a}@{k}" for k in SUPP_TURN_KS for a in ("all", "any")]
 
 
 def h64(s: str) -> int:
@@ -144,7 +148,7 @@ def evaluate_one(q: dict, rs: np.ndarray) -> dict:
     ev_rank = [sid_pos.get(s) for s in ans]
     out = {"ev_session_ranks": ev_rank, "n_ev_sessions": len(ans),
            "top10": [[q["haystack_session_ids"][i], round(float(ss[i]), 5)] for i in order[:10]]}
-    for k in KS:
+    for k in sorted(set(KS) | set(SUPP_KS)):
         hit = [r is not None and r <= k for r in ev_rank]
         out[f"all@{k}"] = int(bool(hit) and all(hit)); out[f"any@{k}"] = int(any(hit))
         out[f"frac@{k}"] = (sum(hit) / len(hit)) if hit else None
@@ -155,8 +159,9 @@ def evaluate_one(q: dict, rs: np.ndarray) -> dict:
     rpos = np.empty(len(rs), dtype=int); rpos[ro] = np.arange(1, len(rs) + 1)
     evr = rpos[q["r_ev"]]
     out["ev_round_ranks"] = sorted(int(x) for x in evr)
-    out["turn_all@10"] = int((evr <= 10).all()) if len(evr) else None
-    out["turn_any@10"] = int((evr <= 10).any()) if len(evr) else None
+    for k in SUPP_TURN_KS:
+        out[f"turn_all@{k}"] = int((evr <= k).all()) if len(evr) else None
+        out[f"turn_any@{k}"] = int((evr <= k).any()) if len(evr) else None
     return out
 
 
@@ -196,18 +201,19 @@ def table_text(D, R, variants, pairs) -> tuple[str, list[str]]:
     g = groups(D)
     keys = ORDER + sorted(k for k in g if k.endswith("_abs"))
     lines, grid = [], ["group\tmetric\tvariant\tmean\thits\tn"]
-    for m in METRICS:
-        lines.append(f"\n== {m} (hits / n per group) ==")
-        lines.append("variant".ljust(10) + "".join(k[:12].rjust(14) for k in keys))
+    for m in METRICS + [x for x in SUPP if x not in METRICS]:
+        tag = "" if m in METRICS else "  [补充指标, not used by verdicts]"
+        lines.append(f"\n== {m} (hits / n per group){tag} ==")
+        lines.append("variant".ljust(10) + "".join(k[:14].rjust(16) for k in keys))
         for v in variants:
             row = v.ljust(10)
             for k in keys:
                 mu, n, h = mean_of(R[v], g.get(k, []), m)
-                row += (f"{h:g}/{n} {mu:.3f}" if n else "-").rjust(14)
+                row += (f"{h:.4g}/{n} {mu:.3f}" if n else "-").rjust(16)
                 grid.append(f"{k}\t{m}\t{v}\t{mu:.4f}\t{h:g}\t{n}")
             lines.append(row)
     for a, b in pairs:
-        for m in ("all@5", "all@10", "frac@5", "frac@10", "turn_all@10"):
+        for m in ("all@5", "all@10", "frac@5", "frac@10", "turn_all@10", "all@1", "all@3", "turn_all@5", "turn_any@5", "turn_all@20"):
             lines.append(f"\n-- {a} vs {b} on {m}: gain/loss (sign p) | mean diff +- SE | wilcoxon p --")
             for k in ORDER:
                 r = paired(R[a], R[b], g.get(k, []), m)
