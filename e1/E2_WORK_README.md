@@ -32,7 +32,12 @@ output (git commit, dirty flag, argv, inputs, params).
 | `retrieved/<arm>/<dom>.jsonl` | frozen arm: raw blocks per question (query, method rank, official V similarity for the header, method score, entry id) | `retrieve.py select` |
 | `contexts/<arm>/<dom>_contexts.jsonl` | rendered memory contexts (official renderers; notes / events copied from B0 for parsed questions, re-searched for regenerated ones) | `e1/pipeline/build_context.py` |
 | `reports/s1_memory_form.txt` | §十 S1a retention / S1b section-of-B1-context tables | `e1/analysis/memory_form.py` |
-| `reports/*.txt` | other printed reports (V gate, calibration, reader comparisons) | see each file's first line |
+| `reports/*.txt`, `reports/*.jsonl` | printed reports and per-question dumps: trunc_report, r4_rule_* (rule-scored arm vs B1), r4_cross_* (outcome x coverage x truncation), s1c_noraw_rule_*, a0_rule / a1_rule, trap_gotcha_compare, reason_sample_web | `rule_compare.py`, `r4_cross.py`, `trunc_report.py`, `reason_sample.py` |
+| `rounds/waterfall/` | per-question first failing stage (B1, fusion) + tables | `waterfall.py` |
+| `official_judge/<arm>_<dom>.jsonl`, `<arm>_usage.json` | GPT-5.2 judge on LLM-judged questions only (after the 05:05 credit outage), token usage | `official_judge.py` |
+| `local_judge/<arm>_<dom>.jsonl` | local Qwen3.5-9B judge (official prompts, T=0, no thinking); 本地评分，与官方 GPT-5.2 评分不可比，只用于配对比较 | `local_judge.py` (ARM=ljudge) |
+| `armA_pilot_ids.txt`, `false_premise_ids.txt` | fixed id lists (arm A pilot, seed 0; false-premise questions) | logged before use |
+| `*.sh`, `*.py` at top level | one-shot helper scripts used tonight (build, judge, reconnect) | see night log |
 
 ## Reader arms (`~/e1/runs/<arm>/<dom>_small/`)
 
