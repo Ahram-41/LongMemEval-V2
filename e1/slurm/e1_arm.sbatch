@@ -23,6 +23,8 @@ killsrv() { for p in ${READER_PID:-} ${EMBED_PID:-}; do [ -n "$p" ] && [ "$p" !=
 E1=$HOME/e1; REPO=$E1/LongMemEval-V2; export E1
 ARM=${ARM:?set ARM=gate|b1|p|...|e2}; BASE=$E1/runs/agentrunbook_r_small
 [ -f "$E1/.env" ] && set -a && source "$E1/.env" && set +a
+# NO_JUDGE=1: never call the paid judge from the harness (scoring then fails fast after outputs are cached)
+[ -n "${NO_JUDGE:-}" ] && export OPENAI_API_KEY=EMPTY
 export READER_MODEL=Qwen/Qwen3.5-9B
 export LME_CONTROLLER_MODEL=Qwen/Qwen3.5-9B
 export LME_EMBEDDING_MODEL=Qwen/Qwen3-Embedding-8B
@@ -31,6 +33,8 @@ PY=$E1/miniforge3/envs/lme-v2-release/bin/python
 RESUBMIT_COUNT=${RESUBMIT_COUNT:-0}; RESUBMIT_MAX=${RESUBMIT_MAX:-4}
 resubmit() {
   killsrv
+  # cancel guard: touch $E1/STOP_RESUBMIT (or $E1/STOP_<jobname>) before scancel to prevent the self-resubmit
+  if [ -f "$E1/STOP_RESUBMIT" ] || [ -f "$E1/STOP_${SLURM_JOB_NAME:-x}" ]; then echo "[arm] STOP file present: not resubmitting"; exit 0; fi
   if [ "$RESUBMIT_COUNT" -ge "$RESUBMIT_MAX" ]; then echo "[arm] resubmit cap reached"; exit 1; fi
   echo "[arm] time limit: resubmitting ($((RESUBMIT_COUNT+1))/$RESUBMIT_MAX)"
   cd "$E1" && RESUBMIT_COUNT=$((RESUBMIT_COUNT+1)) sbatch --export=ALL -p "$SLURM_JOB_PARTITION" --gpus="$SBATCH_GPUS_RESUB" --time="$SBATCH_TIME_RESUB" -J "$SLURM_JOB_NAME" "$REPO/e1/slurm/e1_arm.sbatch"; exit 0
@@ -142,6 +146,20 @@ case "$ARM" in
   ljudge) # local Qwen judge for LLM-judged questions (GPT-5.2 credits exhausted); LJ_ARMS comma list
         "$PY" e1/analysis/local_judge.py --arms "${LJ_ARMS:-b1_small,e2_fusion_small}" ${LJ_IDS:+--ids-file $LJ_IDS} &
         wait $!; rc=$? ;;
+  e2phase) # prioritised phases of an E2 arm (split_phases.py): PHARM=<arm>, E2DOMAINS=<domain>, phases p1 p2 p3 in order
+        rc=0
+        for P in ${PHASES:-p1 p2 p3}; do
+          for d in ${E2DOMAINS:-web enterprise}; do
+            DST=$E1/runs/${PHARM:?}_${P}_small/${d}_small
+            ids=$(cat "$DST/ids.txt" 2>/dev/null); [ -z "$ids" ] && continue
+            n=$(tr , "\n" < "$DST/ids.txt" | wc -l); c=$(grep -c question_id "$DST/reader_outputs_cache.jsonl" 2>/dev/null || echo 0)
+            echo "[e2phase] $P $d: $c/$n cached"
+            "$PY" e1/pipeline/run_e1.py --index-root "$E1/index" --method agentrunbook_r --domain "$d" --tier small \
+               --data-root "$DATA_ROOT" --output-dir "$DST" --question-ids "$ids" \
+               --reader-max-concurrent-requests 8 --prompt-build-max-workers 8 &
+            wait $! || true   # scoring fails by design under NO_JUDGE; outputs are cached
+          done
+        done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
