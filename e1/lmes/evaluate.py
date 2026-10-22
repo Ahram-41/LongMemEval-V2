@@ -307,7 +307,8 @@ def verdicts(D: Data, R: dict, fusion: str) -> dict:
             mus = {w: mean_of(R[f"w{w:g}"], g[t], m)[0] for w in WGRID}
             best = max(mus.values())
             W = [w for w in WGRID if abs(mus[w] - best) < 1e-12]
-            se = paired(R[f"w{W[0]:g}"], R["w0"], g[t], m)["se"]
+            worst = min(WGRID, key=lambda w: mus[w])
+            se = paired(R[f"w{W[0]:g}"], R[f"w{worst:g}"], g[t], m)["se"]   # SE of the paired best-minus-worst difference
             flat = (best - min(mus.values())) <= (se if not math.isnan(se) else 0)
             r4[t] = {"best_w": W, "lean": float(np.median(W)), "curve": {f"{w:g}": round(mus[w], 4) for w in WGRID},
                      "range": round(best - min(mus.values()), 4), "flat_within_1SE": bool(flat)}
