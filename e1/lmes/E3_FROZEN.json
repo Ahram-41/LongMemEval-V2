@@ -1,0 +1,9 @@
+{
+  "frozen_at": "2026-10-22 ~13:30 (cluster time), after dev rounds r1_bm25_tok, r2_bm25_supp, r3_methods, r4_verdict_dev (~/e1/e3work/rounds/)",
+  "dev_ids": "~/e1/e3work/split/dev_ids.txt (261; 242 non-abs)",
+  "bm25_tokenizer": "camel (dev all@10 216/242 both; all@5 camel 189 vs basic 188)",
+  "fusion_F": {"variant": "w0.2", "rule": "highest dev non-abs all@10, then all@5, then list order", "dev_all10": "235/242", "dev_all5": "223/242"},
+  "dense": {"model": "Qwen/Qwen3-Embedding-8B", "query_format": "Instruct: {task}\\nQuery:{question}", "task": "Given a question about the user's past chat sessions with an AI assistant, retrieve the conversation rounds that help answer it.", "documents": "round text, no instruction, <=4096-token pieces, round score = max piece"},
+  "dev_verdicts": {"R1": "supported by rule (no reversal; SSU/SSA at BM25 ceiling)", "R2": "holds", "R3": "k-dependent (partial @5; falsified @10)", "R4": "ordering holds on dev (SSA flat, SSU 1-question range)"},
+  "heldout_run": "evaluate.py verdict --set heldout --round r5_verdict_heldout --fusion w0.2 (once)"
+}
