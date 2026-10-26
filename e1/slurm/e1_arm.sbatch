@@ -15,6 +15,7 @@
 #   ARM=e2   : E2 retrieval arm (E2ARM, E2CTX, E2RET); reader rerun only on questions whose raw blocks changed
 #   ARM=pa / ps : P with note rule any / strict, reader rerun ONLY on noted questions
 #                 (unnoted prompts are identical to B1; merge with B1 outputs at analysis time)
+#   ARM=think: rerun_with_thinking.py (error analysis: reasoning_content on a fixed id list)
 # Reader-only: the embedding server is not started. Reader outputs are cached per question, so a
 # job killed at its time limit resubmits itself (RESUBMIT_MAX, default 4) and resumes.
 set -uo pipefail
@@ -160,6 +161,13 @@ case "$ARM" in
             wait $! || true   # scoring fails by design under NO_JUDGE; outputs are cached
           done
         done ;;
+  think) # error analysis 2026-10-26: replay cached prompts, keep reasoning_content (THINK_ARMS, THINK_CONC)
+        rc=0
+        for A in ${THINK_ARMS:-b1 fusion}; do
+          "$PY" e1/oneoff/rerun_with_thinking.py run --arm $A --concurrency ${THINK_CONC:-6} ${LIMIT:+--limit $LIMIT} &
+          wait $! || rc=$?
+        done
+        "$PY" e1/oneoff/rerun_with_thinking.py score || true ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
