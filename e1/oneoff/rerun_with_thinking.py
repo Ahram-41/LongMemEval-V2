@@ -300,9 +300,15 @@ def score(args) -> None:
 
 # ----------------------------------------------------------------------------- export-c
 def export_c(args) -> None:
+    """Per-question rows (no memory_context) of both arms for the C questions. B1 rows come from
+    per_question.jsonl; the fusion arm has no scored per_question rows (NO_JUDGE), so its rows are
+    assembled from prompt_rows.jsonl + reader_outputs_cache.jsonl and rule-scored here (the same
+    scoring as rule_compare.py; rule_correct_r4 is the dump's verdict for cross-checking)."""
     ids = load_ids(args.ids)
     fo = fusion_original()
     C = set(ids["groups"]["C_fixed"]) | set(ids["groups"]["C_broke"])
+    grp = {q: "C_fixed" for q in ids["groups"]["C_fixed"]}
+    grp.update({q: "C_broke" for q in ids["groups"]["C_broke"]})
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
     keep = ("question_id", "question_type", "eval_function", "question_text", "answer_gold", "response_parsed_boxed",
@@ -310,21 +316,38 @@ def export_c(args) -> None:
             "memory_context_token_count", "memory_context_original_token_count")
     n = 0
     with open(out, "w") as fp:
-        for arm, folder in ARMS.items():
-            for dom in DOMS:
-                with open(E1 / f"runs/{folder}/{dom}_small/per_question.jsonl") as src:
-                    for line in src:
-                        if not line.strip():
-                            continue
-                        r = json.loads(line)
-                        if r["question_id"] in C:
-                            rec = {"arm": arm, "domain": dom, **{k: r.get(k) for k in keep},
-                                   "group": "C_fixed" if r["question_id"] in ids["groups"]["C_fixed"] else "C_broke",
-                                   "response_raw_tail": (r.get("response_raw") or "")[-600:]}
-                            if arm == "fusion":  # per_question scores absent (NO_JUDGE); use the rule_compare dump
-                                rec["rule_correct_r4"] = fo.get(r["question_id"])
-                            fp.write(json.dumps(rec, ensure_ascii=False) + "\n"); n += 1
-                        del r
+        for dom in DOMS:
+            with open(E1 / f"runs/b1_small/{dom}_small/per_question.jsonl") as src:
+                for line in src:
+                    if not line.strip():
+                        continue
+                    r = json.loads(line)
+                    if r["question_id"] in C:
+                        rec = {"arm": "b1", "domain": dom, "group": grp[r["question_id"]], **{k: r.get(k) for k in keep},
+                               "response_raw_tail": (r.get("response_raw") or "")[-600:]}
+                        fp.write(json.dumps(rec, ensure_ascii=False) + "\n"); n += 1
+                    del r
+            rows = prompt_rows(E1 / "runs/e2_fusion_small", dom, C)
+            cache = {}
+            with open(E1 / f"runs/e2_fusion_small/{dom}_small/reader_outputs_cache.jsonl", encoding="utf-8", errors="replace") as src:
+                for line in src:
+                    try:
+                        c = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(c.get("output"), dict) and c["question_id"] in C:
+                        cache[c["question_id"]] = c["output"]
+            for q, r in rows.items():
+                o = cache.get(q, {})
+                boxed = o.get("response_parsed_boxed", "")
+                sc = eval_from_spec(r["eval_function"], boxed, r["answer_gold"]) if o else None
+                ok = bool(o) and (not o.get("is_unknown")) and score_to_bool(sc)
+                rec = {"arm": "fusion", "domain": dom, "group": grp[q],
+                       **{k: r.get(k) for k in keep if k in r},
+                       "response_parsed_boxed": boxed, "is_unknown": o.get("is_unknown"), "score": sc, "score_bool": ok,
+                       "usage": o.get("usage"), "rule_correct_r4": fo.get(q), "output_cached": bool(o),
+                       "response_raw_tail": (o.get("response_raw") or "")[-600:]}
+                fp.write(json.dumps(rec, ensure_ascii=False) + "\n"); n += 1
     print(f"[export-c] {n} rows -> {out}")
 
 
