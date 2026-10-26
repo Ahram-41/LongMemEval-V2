@@ -246,8 +246,16 @@ def original_scores(arm_folder: str, dom: str, want: set) -> dict:
     return out
 
 
+def fusion_original() -> dict:
+    """e2_fusion_small/per_question.jsonl was written under NO_JUDGE (scores absent), so the fusion
+    arm's original rule scores come from rule_compare's dump, as in the E2 report."""
+    p = E1 / "e2work/reports/r4_rule_fusion_complete.jsonl"
+    return {r["question_id"]: bool(r["arm_correct"]) for r in (json.loads(l) for l in open(p) if l.strip())}
+
+
 def score(args) -> None:
     ids = load_ids(args.ids)
+    fo = fusion_original()
     table = defaultdict(Counter)  # (arm, group) -> outcome counts
     for arm, folder in ARMS.items():
         for dom in DOMS:
@@ -256,6 +264,8 @@ def score(args) -> None:
                 continue
             want = {q for q, e in ids["by_id"].items() if arm in e["arms"] and e["domain"] == dom}
             orig = original_scores(folder, dom, want)
+            if arm == "fusion":
+                orig = {q: fo[q] for q in want if q in fo}
             rows = {}
             for line in open(p):
                 if line.strip():
@@ -291,6 +301,7 @@ def score(args) -> None:
 # ----------------------------------------------------------------------------- export-c
 def export_c(args) -> None:
     ids = load_ids(args.ids)
+    fo = fusion_original()
     C = set(ids["groups"]["C_fixed"]) | set(ids["groups"]["C_broke"])
     out = Path(args.out).expanduser()
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -310,6 +321,8 @@ def export_c(args) -> None:
                             rec = {"arm": arm, "domain": dom, **{k: r.get(k) for k in keep},
                                    "group": "C_fixed" if r["question_id"] in ids["groups"]["C_fixed"] else "C_broke",
                                    "response_raw_tail": (r.get("response_raw") or "")[-600:]}
+                            if arm == "fusion":  # per_question scores absent (NO_JUDGE); use the rule_compare dump
+                                rec["rule_correct_r4"] = fo.get(r["question_id"])
                             fp.write(json.dumps(rec, ensure_ascii=False) + "\n"); n += 1
                         del r
     print(f"[export-c] {n} rows -> {out}")
