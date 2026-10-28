@@ -173,6 +173,9 @@ case "$ARM" in
         [ -n "${IV_WRAPOLD:-}" ] && { "$PY" e1/oneoff/reader_interventions.py wrap-old --concurrency 8 & wait $! || true; }
         "$PY" e1/oneoff/reader_interventions.py run --variant "${IV_VARIANT:?}" --concurrency ${IV_CONC:-8} ${LIMIT:+--limit $LIMIT} &
         wait $! || rc=$? ;;
+  iv2)  # forced-format wrap-up on all capped rows, then score (after both iv variants finished)
+        "$PY" e1/oneoff/reader_interventions.py wrap2 --concurrency 8 & wait $!; rc=$?
+        "$PY" e1/oneoff/reader_interventions.py score || true ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv

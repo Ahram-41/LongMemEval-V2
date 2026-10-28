@@ -16,7 +16,14 @@ Modes (cluster, ~/e1 layout):
   run      --variant base|strip  -> ~/e1/runs/iv_<variant>_small/<dom>_small/outputs.jsonl (resumable)
   wrap-old wrap-up on the cap-hit rows of the 2026-10-26 thinking rerun (runs/think_*), quick check
            -> ~/e1/runs/think_<arm>_small/<dom>_small/wrapup.jsonl
-  score    rule-score everything -> ~/e1/e2work/reports/iv_scores.jsonl and a printed summary
+  wrap2    forced-format wrap-up on every capped row (iv outputs and the 10-26 think rows): the prefix
+           ends with "</think>\n\nThe final answer is \\boxed{" so the model can only write the answer
+           (the first wrap-up often restarted the analysis in the answer text and never boxed);
+           -> wrap2.jsonl next to each source file
+  score    rule-score everything -> ~/e1/e2work/reports/iv_scores.jsonl and a printed summary.
+           Two scorings: official (the harness: a prediction without \\boxed{} is the whole text, and
+           norm_phrase_set_match passes when every gold phrase occurs in it) and strict (a \\boxed{}
+           answer must exist).
 """
 from __future__ import annotations
 
@@ -212,9 +219,72 @@ async def wrap_old_async(args) -> None:
     await client.close()
 
 
+WRAP2 = WRAP + "The final answer is \\boxed{"
+
+
+async def wrap_forced(client, model, messages, reasoning, sem):
+    msgs = messages + [{"role": "assistant", "content": "<think>\n" + reasoning.strip("\n") + WRAP2}]
+    async with sem:
+        r = await client.chat.completions.create(
+            model=model, messages=msgs, max_tokens=64, timeout=3600,
+            extra_body={"top_k": 20, "continue_final_message": True, "add_generation_prompt": False}, **SAMPLING)
+    m = r.choices[0].message
+    tail = (m.content or "") + (reasoning_of(m) or "")
+    ans = extract_boxed_answer("\\boxed{" + tail)
+    return {"wrap2_boxed": ans if "}" in tail else ans.split("\n", 1)[0], "wrap2_raw": tail[:300]}
+
+
+async def wrap2_async(args) -> None:
+    from openai import AsyncOpenAI
+    from e1.oneoff.rerun_with_thinking import ARMS, prompt_rows
+    client = AsyncOpenAI(base_url=os.environ["READER_BASE_URL"], api_key="EMPTY")
+    model = os.environ.get("READER_MODEL", "Qwen/Qwen3.5-9B")
+    sem = asyncio.Semaphore(args.concurrency)
+    srcs = [(E1 / f"runs/iv_{v}_small/{d}_small/outputs.jsonl", v) for v in ("base", "strip") for d in DOMS]
+    srcs += [(E1 / f"runs/think_{a}_small/{d}_small/thinking.jsonl", a) for a in ("b1", "fusion") for d in DOMS]
+    for path, tag in srcs:
+        if not path.exists():
+            continue
+        dom = path.parent.name.replace("_small", "")
+        capped = {}
+        for line in open(path):
+            o = json.loads(line)
+            if o["finish_reason"] == "length" and not (o.get("content") or "").strip():
+                capped[o["question_id"]] = o
+        out = path.parent / "wrap2.jsonl"
+        done = {json.loads(l)["question_id"] for l in open(out)} if out.exists() else set()
+        todo = [q for q in capped if q not in done]
+        if tag in ("base", "strip"):
+            rows = load_rows(dom, set(todo))
+            if tag == "strip":
+                rows = {q: {**r, "messages": strip_labels(r["messages"])[0]} for q, r in rows.items()}
+        else:
+            rows = prompt_rows(E1 / "runs" / ARMS[tag], dom, set(todo))
+            rows.update(prompt_rows(E1 / "runs/b1_small", dom, set(todo) - set(rows)))
+        print(f"[wrap2] {path}: {len(capped)} capped, {len(todo)} to do", flush=True)
+        res = await asyncio.gather(*[wrap_forced(client, model, rows[q]["messages"], capped[q]["reasoning"], sem)
+                                     for q in todo], return_exceptions=True)
+        with open(out, "a") as fp:
+            for q, w in zip(todo, res):
+                if isinstance(w, Exception):
+                    print(f"[wrap2] {q} failed {w!r}", flush=True)
+                    continue
+                o = capped[q]
+                ok = correct(w["wrap2_boxed"], o)
+                fp.write(json.dumps({"question_id": q, "source": tag, "answer_gold": o["answer_gold"],
+                                     "wrap2_correct": ok, **w}, ensure_ascii=False) + "\n")
+                print(f"[wrap2] {tag} {q} gold={o['answer_gold']!r} wrap2={w['wrap2_boxed']!r} ok={ok}", flush=True)
+    await client.close()
+
+
 # ----------------------------------------------------------------------------- score
 def correct(boxed: str, row) -> bool:
     return (not is_unknown(boxed)) and score_to_bool(eval_from_spec(row["eval_function"], boxed, row["answer_gold"]))
+
+
+def correct_strict(text: str, row) -> bool:
+    """Only an explicit \\boxed{} answer counts."""
+    return "\\boxed{" in text and correct(extract_boxed_answer(text.strip()), row)
 
 
 def mcnemar(b: int, c: int) -> float:
@@ -237,6 +307,12 @@ def score(args) -> None:
                     orig[r["question_id"]] = bool(r["score_bool"])
                 del r
     res = {}
+    w2 = {}
+    for v in ("base", "strip"):
+        for dom in DOMS:
+            p2 = E1 / f"runs/iv_{v}_small/{dom}_small/wrap2.jsonl"
+            if p2.exists():
+                w2[(v, dom)] = {json.loads(l)["question_id"]: json.loads(l) for l in open(p2)}
     for v in ("base", "strip"):
         for dom in DOMS:
             p = E1 / f"runs/iv_{v}_small/{dom}_small/outputs.jsonl"
@@ -249,6 +325,11 @@ def score(args) -> None:
                        "plain": correct(o["boxed"], o), "cap": o["cap_no_answer"],
                        "completion_tokens": o["completion_tokens"], "labels_removed": o["labels_removed"]}
                 rec["wrapped"] = correct(o["wrap_boxed"], o) if o["cap_no_answer"] and "wrap_boxed" in o else rec["plain"]
+                rec["plain_strict"] = correct_strict(o["content"], o)
+                rec["wrapped_strict"] = (correct_strict(o.get("wrap_text", ""), o) if o["cap_no_answer"]
+                                         else rec["plain_strict"])
+                rec["wrap2"] = w2.get((v, dom), {}).get(q, {}).get("wrap2_correct") if o["cap_no_answer"] else None
+                rec["forced"] = rec["wrap2"] if rec["wrap2"] is not None else rec["plain_strict"]
                 res[(v, q)] = rec
     out = E1 / "e2work/reports/iv_scores.jsonl"
     with open(out, "w") as fp:
@@ -262,13 +343,14 @@ def score(args) -> None:
             continue
         n = len(R); cap = sum(r["cap"] for r in R)
         gain = sum(r["wrapped"] and not r["plain"] for r in R); loss = sum(r["plain"] and not r["wrapped"] for r in R)
-        print(f"  {v:5} n={n} plain {sum(r['plain'] for r in R)} ({sum(r['plain'] for r in R)/n:.3f})  "
-              f"wrapped {sum(r['wrapped'] for r in R)} ({sum(r['wrapped'] for r in R)/n:.3f})  cap {cap}  "
-              f"wrap gain {gain} loss {loss}")
+        print(f"  {v:5} n={n} cap {cap} | official: plain {sum(r['plain'] for r in R)} ({sum(r['plain'] for r in R)/n:.3f}) "
+              f"wrapped {sum(r['wrapped'] for r in R)} (gain {gain} loss {loss}) | strict: plain {sum(r['plain_strict'] for r in R)} "
+              f"wrapped {sum(r['wrapped_strict'] for r in R)} forced {sum(bool(r['forced']) for r in R)} "
+              f"(forced on cap: {sum(bool(r['wrap2']) for r in R if r['cap'])}/{sum(r['wrap2'] is not None for r in R)})")
         bo = [r for r in R if r["question_id"] in orig]
         b = sum(r["plain"] and not orig[r["question_id"]] for r in bo); c = sum(orig[r["question_id"]] and not r["plain"] for r in bo)
         print(f"        vs B1 original (plain): +{b} -{c}  p={mcnemar(b, c):.3f}")
-    for key in ("plain", "wrapped"):
+    for key in ("plain", "wrapped", "plain_strict", "forced"):
         b = sum(res[("strip", q)][key] and not res[("base", q)][key] for q in both)
         c = sum(res[("base", q)][key] and not res[("strip", q)][key] for q in both)
         print(f"  strip vs base ({key}) on {len(both)} paired: strip fixes {b}, breaks {c}, p={mcnemar(b, c):.3f}")
@@ -287,7 +369,7 @@ def score(args) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["run", "wrap-old", "score"])
+    ap.add_argument("mode", choices=["run", "wrap-old", "wrap2", "score"])
     ap.add_argument("--variant", choices=["base", "strip"], default="base")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--max-tokens", type=int, default=20000)
@@ -298,6 +380,8 @@ def main() -> None:
         asyncio.run(run_async(a))
     elif a.mode == "wrap-old":
         asyncio.run(wrap_old_async(a))
+    elif a.mode == "wrap2":
+        asyncio.run(wrap2_async(a))
     else:
         score(a)
 
