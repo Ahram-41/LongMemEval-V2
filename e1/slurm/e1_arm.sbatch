@@ -168,6 +168,11 @@ case "$ARM" in
           wait $! || rc=$?
         done
         "$PY" e1/oneoff/rerun_with_thinking.py score || true ;;
+  iv)   # reader interventions 2026-10-28 (reader_interventions.py): IV_VARIANT=base|strip; IV_WRAPOLD=1 first
+        rc=0
+        [ -n "${IV_WRAPOLD:-}" ] && { "$PY" e1/oneoff/reader_interventions.py wrap-old --concurrency 8 & wait $! || true; }
+        "$PY" e1/oneoff/reader_interventions.py run --variant "${IV_VARIANT:?}" --concurrency ${IV_CONC:-8} ${LIMIT:+--limit $LIMIT} &
+        wait $! || rc=$? ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
