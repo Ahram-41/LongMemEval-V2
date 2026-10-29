@@ -21,7 +21,10 @@ so the transform shortens the prompt without removing information other than the
 lines and the position of chrome lines inside each page. Header lines (query label, rank, similarity,
 trajectory, goal) are kept byte-for-byte, so this differs from the base prompt only in layout.
 
-  python e1/oneoff/trad_steps.py measure --src <per_question.jsonl or prompt_rows.jsonl> [...]
+Controls, same chrome set, original layout otherwise: chrome_messages = step 2 only; dedup_messages = steps 2
+and 4 (exact repeats -> pointers). trad - dedup isolates the step-aligned diff layout (steps 1 and 3).
+
+  python e1/oneoff/trad_steps.py measure --src <per_question.jsonl or prompt_rows.jsonl> [...] [--layout trad|dedup|chrome]
       prints prompt length before/after and gold-phrase retention (local check, no model).
 """
 from __future__ import annotations
@@ -152,7 +155,58 @@ def render(text: str, k: int, chrome: set[str], seen_full: dict, seen_state: dic
 
 def trad_messages(messages, chrome: set[str]):
     """Copy of messages with every raw-state block re-laid-out; returns (messages, n_blocks)."""
-    seen_full, seen_state, used_chrome, n = {}, {}, {}, 0
+    seen_full, seen_state = {}, {}
+    return _transform(messages, lambda t, k, used: render(t, k, chrome, seen_full, seen_state, used))
+
+
+def chrome_only(text: str, chrome: set[str], used_chrome: dict, k: int = 0, seen: dict | None = None) -> str:
+    """The block in its original layout, with the chrome runs removed from each state's AXTree. With
+    `seen` (dedup control) also: a full action sequence or a state already shown earlier in the prompt is
+    replaced by a pointer. No step marks, no diffs."""
+    b = split_block(text)
+    if b is None:
+        return text
+    head, rest = text.split("\n\nRelevant state slices\n", 1)
+    if seen is not None:
+        pre_full, full_rest = head.split("\nFull action sequence\n", 1)
+        full, local_rest = full_rest.split("\n\nLocal slice action sequence\n", 1)
+        if ("full", b["traj"]) in seen:
+            full = f"(same trajectory {b['traj']} as Raw state result {seen[('full', b['traj'])]} above; see its full action sequence)"
+        else:
+            seen[("full", b["traj"])] = k
+        head = pre_full + "\nFull action sequence\n" + full + "\n\nLocal slice action sequence\n" + local_rest
+    marks = list(STATE_RE.finditer(rest))
+    out = [head, "\n\nRelevant state slices\n", rest[: marks[0].start()] if marks else rest]
+    for i, sm in enumerate(marks):
+        body = rest[sm.start(): marks[i + 1].start() if i + 1 < len(marks) else len(rest)]
+        pre, sep, ax = body.partition("- AXTree:\n")
+        core = ax.rstrip("\n")
+        key = (b["traj"], int(sm.group(1)))
+        if seen is not None and key in seen:
+            lines = [f"(identical to State {key[1]} shown in Raw state result {seen[key]} above)"]
+        else:
+            if seen is not None:
+                seen[key] = k
+            lines = strip_chrome(core.split("\n"), chrome, used_chrome)
+        out.append(pre + sep + "\n".join(lines) + ax[len(core):])
+    return "".join(out)
+
+
+def dedup_messages(messages, chrome: set[str]):
+    """Control for trad_messages: steps 2 and 4 only (chrome listed once; an exactly repeated action
+    sequence or state replaced by a pointer) in the original layout; neighbours stay in full, no step marks."""
+    seen = {}
+    return _transform(messages, lambda t, k, used: chrome_only(t, chrome, used, k, seen))
+
+
+def chrome_messages(messages, chrome: set[str]):
+    """Control for trad_messages: only the chrome step (2) -- chrome runs listed once at the top of the
+    raw-state section and dropped from every state; no step marks, no diffs, no pointers."""
+    return _transform(messages, lambda t, k, used: chrome_only(t, chrome, used))
+
+
+def _transform(messages, fn):
+    used_chrome, n = {}, 0
     out, title_ref = [], None
     for m in messages:
         c = m.get("content")
@@ -161,7 +215,7 @@ def trad_messages(messages, chrome: set[str]):
             for p in c:
                 if p.get("type") == "text" and p["text"].startswith(RAW_HEAD):
                     n += 1
-                    p = {**p, "text": render(p["text"], n, chrome, seen_full, seen_state, used_chrome)}
+                    p = {**p, "text": fn(p["text"], n, used_chrome)}
                 elif p.get("type") == "text" and p["text"].startswith("## Retrieved Raw State Slices"):
                     p = dict(p)
                     title_ref = p
@@ -173,6 +227,9 @@ def trad_messages(messages, chrome: set[str]):
                              "site; shown once here and omitted from every state below)\n"
                              + "\n".join(used_chrome) + "\n\n")
     return out, n
+
+
+LAYOUTS = {"trad": trad_messages, "dedup": dedup_messages, "chrome": chrome_messages}
 
 
 def text_of(messages) -> str:
@@ -199,7 +256,7 @@ def measure(args) -> None:
     lost, ratios = [], []
     for q, gold, msgs, path in rows:
         t0 = text_of(msgs)
-        new, _ = trad_messages(msgs, chrome[path])
+        new, _ = LAYOUTS[args.layout](msgs, chrome[path])
         t1 = text_of(new)
         before += len(t0); after += len(t1); ratios.append(len(t1) / max(1, len(t0)))
         for ph in [x.strip().lower() for x in re.split(r"[,;]", gold) if x.strip()]:
@@ -213,7 +270,7 @@ def measure(args) -> None:
     if args.show:
         for q, gold, msgs, path in rows:
             if q == args.show:
-                print(text_of(trad_messages(msgs, chrome[path])[0])[: args.chars])
+                print(text_of(LAYOUTS[args.layout](msgs, chrome[path])[0])[: args.chars])
 
 
 def main() -> None:
@@ -221,6 +278,7 @@ def main() -> None:
     ap.add_argument("mode", choices=["measure"])
     ap.add_argument("--src", nargs="+", required=True)
     ap.add_argument("--df", type=float, default=CHROME_DF)
+    ap.add_argument("--layout", choices=list(LAYOUTS), default="trad")
     ap.add_argument("--show", default=None)
     ap.add_argument("--chars", type=int, default=6000)
     measure(ap.parse_args())

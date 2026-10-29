@@ -52,7 +52,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from evaluation.qa_eval_metrics import eval_from_spec, extract_boxed_answer, is_unknown, score_to_bool  # noqa: E402
 from e1.oneoff.rerun_with_thinking import reasoning_of  # noqa: E402
-from e1.oneoff.trad_steps import build_chrome, trad_messages  # noqa: E402
+from e1.oneoff.trad_steps import build_chrome, dedup_messages, trad_messages  # noqa: E402
 
 E1 = Path(os.environ.get("E1", "~/e1")).expanduser()
 DOMS = ("web", "enterprise")
@@ -65,7 +65,11 @@ SAMPLING = dict(temperature=0.6, top_p=0.95)
 IDS = E1 / "e2work/reports/error_analysis_ids.json"
 # error-analysis subgroups (pass 2) whose outcome the interventions predict
 LOOP = ["4ed01379", "f1d8a168", "e823a94a", "f61a096f", "e7292dab"]
-VARIANTS = ("base", "strip", "trad")
+VARIANTS = ("base", "strip", "trad", "dedup", "trad2")
+# layout variants: chrome set built per domain; capped calls get the forced wrap-up inline.
+# trad2 = a second, independent sample of trad (its own sampling noise)
+LAYOUT = {"trad": trad_messages, "trad2": trad_messages, "dedup": dedup_messages}
+PAIRS = (("dedup", "trad"), ("trad", "trad2"))  # extra paired comparisons in score()
 ANCHOR = ["a45edf3e", "19367bc7", "4df5e6b4", "767e4106", "25b00876", "31f146ba"]
 
 
@@ -200,18 +204,18 @@ async def run_async(args) -> None:
         random.Random(0).shuffle(order)  # same order in both variants, so partial runs stay paired
         order = [q for q in order if q not in done][: args.limit or None]
         print(f"[iv] {args.variant} {dom}: {len(rows)} rule-scored, {len(done)} done, {len(order)} to run", flush=True)
-        chrome = build_chrome([r["messages"] for r in rows.values()]) if args.variant == "trad" else None
+        chrome = build_chrome([r["messages"] for r in rows.values()]) if args.variant in LAYOUT else None
         jobs = {}
         for q in order:
             if args.variant == "strip":
                 jobs[q] = strip_labels(rows[q]["messages"])
-            elif args.variant == "trad":
-                jobs[q] = trad_messages(rows[q]["messages"], chrome)
+            elif args.variant in LAYOUT:
+                jobs[q] = LAYOUT[args.variant](rows[q]["messages"], chrome)
             else:
                 jobs[q] = (rows[q]["messages"], 0)
 
         async def one(q):
-            if args.variant != "trad":
+            if args.variant not in LAYOUT:
                 return await call_one(client, model, rows[q], jobs[q][0], args, sem)
             o = await call_one(client, model, rows[q], jobs[q][0], args, sem, wrap=False)
             if o["cap_no_answer"]:
@@ -476,28 +480,28 @@ def score(args) -> None:
         bo = [r for r in R if r["question_id"] in orig]
         b = sum(r["plain"] and not orig[r["question_id"]] for r in bo); c = sum(orig[r["question_id"]] and not r["plain"] for r in bo)
         print(f"        vs B1 original (plain): +{b} -{c}  p={mcnemar(b, c):.3f}")
-    for v in VARIANTS[1:]:
-        both = sorted(q for (vv, q) in res if vv == "base" and (v, q) in res)
+    for ref, v in [("base", v) for v in VARIANTS[1:]] + list(PAIRS):
+        both = sorted(q for (vv, q) in res if vv == ref and (v, q) in res)
         if not both:
             continue
         for key in ("plain", "plain_strict", "forced", "cap"):
-            b = sum(bool(res[(v, q)][key]) and not res[("base", q)][key] for q in both)
-            c = sum(bool(res[("base", q)][key]) and not res[(v, q)][key] for q in both)
+            b = sum(bool(res[(v, q)][key]) and not res[(ref, q)][key] for q in both)
+            c = sum(bool(res[(ref, q)][key]) and not res[(v, q)][key] for q in both)
             what = "newly capped" if key == "cap" else "fixes"
-            print(f"  {v} vs base ({key}) on {len(both)} paired: {what} {b}, {'uncapped' if key == 'cap' else 'breaks'} {c}, "
+            print(f"  {v} vs {ref} ({key}) on {len(both)} paired: {what} {b}, {'uncapped' if key == 'cap' else 'breaks'} {c}, "
                   f"p={mcnemar(b, c):.3f}")
             if key == "cap":
                 continue
             by = defaultdict(Counter)
             for q in both:
-                k = (res[("base", q)]["domain"], res[("base", q)]["question_type"])
-                by[k]["n"] += 1; by[k]["base"] += bool(res[("base", q)][key]); by[k][v] += bool(res[(v, q)][key])
+                k = (res[(ref, q)]["domain"], res[(ref, q)]["question_type"])
+                by[k]["n"] += 1; by[k][ref] += bool(res[(ref, q)][key]); by[k][v] += bool(res[(v, q)][key])
             for k, c_ in sorted(by.items()):
-                print(f"      {k[0]:10} {k[1]:20} n={c_['n']:3} base {c_['base']:3} {v} {c_[v]:3}")
-        pt = [(res[("base", q)]["prompt_tokens"], res[(v, q)]["prompt_tokens"]) for q in both
-              if res[("base", q)].get("prompt_tokens") and res[(v, q)].get("prompt_tokens")]
+                print(f"      {k[0]:10} {k[1]:20} n={c_['n']:3} {ref} {c_[ref]:3} {v} {c_[v]:3}")
+        pt = [(res[(ref, q)]["prompt_tokens"], res[(v, q)]["prompt_tokens"]) for q in both
+              if res[(ref, q)].get("prompt_tokens") and res[(v, q)].get("prompt_tokens")]
         if pt:
-            print(f"  {v} prompt tokens: base {sum(a for a, _ in pt):,} -> {sum(b for _, b in pt):,} "
+            print(f"  {v} prompt tokens: {ref} {sum(a for a, _ in pt):,} -> {sum(b for _, b in pt):,} "
                   f"({sum(b for _, b in pt) / sum(a for a, _ in pt):.3f}) on {len(pt)}")
     for name, ids in (("loop", LOOP), ("anchor", ANCHOR)):
         for q in ids:
