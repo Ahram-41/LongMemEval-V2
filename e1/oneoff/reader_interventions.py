@@ -25,6 +25,12 @@ Modes (cluster, ~/e1 layout):
            order of first appearance, so blocks retrieved for the same sub-query still share a tag but
            the question's wording is gone) -- --samples N per (id, variant); capped calls get the forced
            wrap-up -> ~/e1/runs/iv_rep_small/outputs.jsonl (resumable) and a per-item summary
+  run --variant trad
+           TRAD-style aligned step records (trad_steps.py): each raw-state block laid out as
+           [Step -1 / 0 / +1] around its center state, site chrome listed once, neighbours shown as
+           their difference from Step 0, repeated action sequences and states replaced by pointers.
+           Retrieval and every header line unchanged; the prompt is about half as long, no gold
+           phrase lost (trad_steps.py measure). Capped calls get the forced wrap-up inline.
   score    rule-score everything -> ~/e1/e2work/reports/iv_scores.jsonl and a printed summary.
            Two scorings: official (the harness: a prediction without \\boxed{} is the whole text, and
            norm_phrase_set_match passes when every gold phrase occurs in it) and strict (a \\boxed{}
@@ -46,6 +52,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 from evaluation.qa_eval_metrics import eval_from_spec, extract_boxed_answer, is_unknown, score_to_bool  # noqa: E402
 from e1.oneoff.rerun_with_thinking import reasoning_of  # noqa: E402
+from e1.oneoff.trad_steps import build_chrome, trad_messages  # noqa: E402
 
 E1 = Path(os.environ.get("E1", "~/e1")).expanduser()
 DOMS = ("web", "enterprise")
@@ -58,6 +65,7 @@ SAMPLING = dict(temperature=0.6, top_p=0.95)
 IDS = E1 / "e2work/reports/error_analysis_ids.json"
 # error-analysis subgroups (pass 2) whose outcome the interventions predict
 LOOP = ["4ed01379", "f1d8a168", "e823a94a", "f61a096f", "e7292dab"]
+VARIANTS = ("base", "strip", "trad")
 ANCHOR = ["a45edf3e", "19367bc7", "4df5e6b4", "767e4106", "25b00876", "31f146ba"]
 
 
@@ -192,11 +200,25 @@ async def run_async(args) -> None:
         random.Random(0).shuffle(order)  # same order in both variants, so partial runs stay paired
         order = [q for q in order if q not in done][: args.limit or None]
         print(f"[iv] {args.variant} {dom}: {len(rows)} rule-scored, {len(done)} done, {len(order)} to run", flush=True)
+        chrome = build_chrome([r["messages"] for r in rows.values()]) if args.variant == "trad" else None
         jobs = {}
         for q in order:
-            msgs, n = (strip_labels(rows[q]["messages"]) if args.variant == "strip" else (rows[q]["messages"], 0))
-            jobs[q] = (msgs, n)
-        tasks = [call_one(client, model, rows[q], jobs[q][0], args, sem) for q in order]
+            if args.variant == "strip":
+                jobs[q] = strip_labels(rows[q]["messages"])
+            elif args.variant == "trad":
+                jobs[q] = trad_messages(rows[q]["messages"], chrome)
+            else:
+                jobs[q] = (rows[q]["messages"], 0)
+
+        async def one(q):
+            if args.variant != "trad":
+                return await call_one(client, model, rows[q], jobs[q][0], args, sem)
+            o = await call_one(client, model, rows[q], jobs[q][0], args, sem, wrap=False)
+            if o["cap_no_answer"]:
+                o.update(await wrap_forced(client, model, jobs[q][0], o["reasoning"], sem))
+                o["wrap2_correct"] = correct(o["wrap2_boxed"], rows[q])
+            return o
+        tasks = [one(q) for q in order]
         with open(out, "a") as fp:
             for fut in asyncio.as_completed(tasks):
                 try:
@@ -212,7 +234,8 @@ async def run_async(args) -> None:
                           "memory_context_token_count": r["memory_context_token_count"]})
                 fp.write(json.dumps(o, ensure_ascii=False) + "\n"); fp.flush()
                 print(f"[iv] {o['question_id']} tok={o['completion_tokens']} fin={o['finish_reason']} "
-                      f"labels-={o['labels_removed']} boxed={o['boxed'][:40]!r} wrap={o.get('wrap_boxed', '')[:40]!r}",
+                      f"labels-={o['labels_removed']} boxed={o['boxed'][:40]!r} "
+                      f"wrap={(o.get('wrap_boxed') or o.get('wrap2_boxed') or '')[:40]!r}",
                       flush=True)
     await client.close()
 
@@ -415,7 +438,7 @@ def score(args) -> None:
             p2 = E1 / f"runs/iv_{v}_small/{dom}_small/wrap2.jsonl"
             if p2.exists():
                 w2[(v, dom)] = {json.loads(l)["question_id"]: json.loads(l) for l in open(p2)}
-    for v in ("base", "strip"):
+    for v in VARIANTS:
         for dom in DOMS:
             p = E1 / f"runs/iv_{v}_small/{dom}_small/outputs.jsonl"
             if not p.exists():
@@ -430,16 +453,17 @@ def score(args) -> None:
                 rec["plain_strict"] = correct_strict(o["content"], o)
                 rec["wrapped_strict"] = (correct_strict(o.get("wrap_text", ""), o) if o["cap_no_answer"]
                                          else rec["plain_strict"])
-                rec["wrap2"] = w2.get((v, dom), {}).get(q, {}).get("wrap2_correct") if o["cap_no_answer"] else None
+                rec["wrap2"] = (o.get("wrap2_correct", w2.get((v, dom), {}).get(q, {}).get("wrap2_correct"))
+                                if o["cap_no_answer"] else None)
+                rec["prompt_tokens"] = o.get("prompt_tokens")
                 rec["forced"] = rec["wrap2"] if rec["wrap2"] is not None else rec["plain_strict"]
                 res[(v, q)] = rec
     out = E1 / "e2work/reports/iv_scores.jsonl"
     with open(out, "w") as fp:
         for rec in res.values():
             fp.write(json.dumps({**rec, "b1_original": orig.get(rec["question_id"])}) + "\n")
-    both = sorted(q for (v, q) in res if v == "base" and ("strip", q) in res)
-    print(f"[score] base {sum(v == 'base' for v, _ in res)}, strip {sum(v == 'strip' for v, _ in res)}, paired {len(both)}  -> {out}")
-    for v in ("base", "strip"):
+    print(f"[score] " + ", ".join(f"{v} {sum(vv == v for vv, _ in res)}" for v in VARIANTS) + f"  -> {out}")
+    for v in VARIANTS:
         R = [r for (vv, _), r in res.items() if vv == v]
         if not R:
             continue
@@ -452,20 +476,33 @@ def score(args) -> None:
         bo = [r for r in R if r["question_id"] in orig]
         b = sum(r["plain"] and not orig[r["question_id"]] for r in bo); c = sum(orig[r["question_id"]] and not r["plain"] for r in bo)
         print(f"        vs B1 original (plain): +{b} -{c}  p={mcnemar(b, c):.3f}")
-    for key in ("plain", "wrapped", "plain_strict", "forced"):
-        b = sum(res[("strip", q)][key] and not res[("base", q)][key] for q in both)
-        c = sum(res[("base", q)][key] and not res[("strip", q)][key] for q in both)
-        print(f"  strip vs base ({key}) on {len(both)} paired: strip fixes {b}, breaks {c}, p={mcnemar(b, c):.3f}")
-        by = defaultdict(Counter)
-        for q in both:
-            k = (res[("base", q)]["domain"], res[("base", q)]["question_type"])
-            by[k]["n"] += 1; by[k]["base"] += res[("base", q)][key]; by[k]["strip"] += res[("strip", q)][key]
-        for k, c_ in sorted(by.items()):
-            print(f"      {k[0]:10} {k[1]:20} n={c_['n']:3} base {c_['base']:3} strip {c_['strip']:3}")
+    for v in VARIANTS[1:]:
+        both = sorted(q for (vv, q) in res if vv == "base" and (v, q) in res)
+        if not both:
+            continue
+        for key in ("plain", "plain_strict", "forced", "cap"):
+            b = sum(bool(res[(v, q)][key]) and not res[("base", q)][key] for q in both)
+            c = sum(bool(res[("base", q)][key]) and not res[(v, q)][key] for q in both)
+            what = "newly capped" if key == "cap" else "fixes"
+            print(f"  {v} vs base ({key}) on {len(both)} paired: {what} {b}, {'uncapped' if key == 'cap' else 'breaks'} {c}, "
+                  f"p={mcnemar(b, c):.3f}")
+            if key == "cap":
+                continue
+            by = defaultdict(Counter)
+            for q in both:
+                k = (res[("base", q)]["domain"], res[("base", q)]["question_type"])
+                by[k]["n"] += 1; by[k]["base"] += bool(res[("base", q)][key]); by[k][v] += bool(res[(v, q)][key])
+            for k, c_ in sorted(by.items()):
+                print(f"      {k[0]:10} {k[1]:20} n={c_['n']:3} base {c_['base']:3} {v} {c_[v]:3}")
+        pt = [(res[("base", q)]["prompt_tokens"], res[(v, q)]["prompt_tokens"]) for q in both
+              if res[("base", q)].get("prompt_tokens") and res[(v, q)].get("prompt_tokens")]
+        if pt:
+            print(f"  {v} prompt tokens: base {sum(a for a, _ in pt):,} -> {sum(b for _, b in pt):,} "
+                  f"({sum(b for _, b in pt) / sum(a for a, _ in pt):.3f}) on {len(pt)}")
     for name, ids in (("loop", LOOP), ("anchor", ANCHOR)):
         for q in ids:
             cells = [f"{v}:{'x' if (v, q) not in res else ('cap ' if res[(v, q)]['cap'] else '') + ('P' if res[(v, q)]['plain'] else '-') + '/' + ('W' if res[(v, q)]['wrapped'] else '-')}"
-                     for v in ("base", "strip")]
+                     for v in VARIANTS]
             print(f"  {name:6} {q} B1orig={orig.get(q)} " + " ".join(cells))
 
 
@@ -475,7 +512,7 @@ def main() -> None:
     ap.add_argument("--ids", default=None)
     ap.add_argument("--variants", default="base,strip,neutral")
     ap.add_argument("--samples", type=int, default=4)
-    ap.add_argument("--variant", choices=["base", "strip"], default="base")
+    ap.add_argument("--variant", choices=list(VARIANTS), default="base")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--max-tokens", type=int, default=20000)
     ap.add_argument("--timeout", type=float, default=7200)
