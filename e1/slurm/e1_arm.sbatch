@@ -176,6 +176,8 @@ case "$ARM" in
   iv2)  # forced-format wrap-up on all capped rows, then score (after both iv variants finished)
         "$PY" e1/oneoff/reader_interventions.py wrap2 --concurrency 8 & wait $!; rc=$?
         "$PY" e1/oneoff/reader_interventions.py score || true ;;
+  ivrep) # repeated sampling on the label-anchor ids: base / strip / neutral labels (IVREP_SAMPLES, IVREP_IDS)
+        "$PY" e1/oneoff/reader_interventions.py rep --samples ${IVREP_SAMPLES:-4} --concurrency ${IV_CONC:-12} ${IVREP_IDS:+--ids $IVREP_IDS} & wait $!; rc=$? ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv

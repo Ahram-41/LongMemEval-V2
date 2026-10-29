@@ -20,6 +20,11 @@ Modes (cluster, ~/e1 layout):
            ends with "</think>\n\nThe final answer is \\boxed{" so the model can only write the answer
            (the first wrap-up often restarted the analysis in the answer text and never boxed);
            -> wrap2.jsonl next to each source file
+  rep      repeated sampling on a few ids (default: the 6 label-anchor items) under three label
+           variants -- base, strip, neutral (each distinct query text replaced by "Q1", "Q2", ... in
+           order of first appearance, so blocks retrieved for the same sub-query still share a tag but
+           the question's wording is gone) -- --samples N per (id, variant); capped calls get the forced
+           wrap-up -> ~/e1/runs/iv_rep_small/outputs.jsonl (resumable) and a per-item summary
   score    rule-score everything -> ~/e1/e2work/reports/iv_scores.jsonl and a printed summary.
            Two scorings: official (the harness: a prediction without \\boxed{} is the whole text, and
            norm_phrase_set_match passes when every gold phrase occurs in it) and strict (a \\boxed{}
@@ -78,6 +83,37 @@ def strip_labels(messages):
     return out, n
 
 
+NEUTRAL_RE = re.compile(r"(?m)^([ \t]*-[ \t]*(?:Source raw query|Note query|Event query)[ \t]*:)[ \t]*(.*)$")
+
+
+def neutral_labels(messages):
+    """Copy of messages with each label's query text replaced by a per-prompt id (Q1, Q2, ... by first
+    appearance); returns (messages, n_replaced)."""
+    ids, out, n = {}, [], 0
+
+    def sub(m):
+        nonlocal n
+        n += 1
+        q = m.group(2).strip()
+        ids.setdefault(q, f"Q{len(ids) + 1}")
+        return f"{m.group(1)} {ids[q]}"
+    for m in messages:
+        c = m["content"]
+        if isinstance(c, list):
+            c = [{**p, "text": NEUTRAL_RE.sub(sub, p["text"])} if p.get("type") == "text" else p for p in c]
+            m = {**m, "content": c}
+        out.append(m)
+    return out, n
+
+
+def variant_messages(messages, variant):
+    if variant == "strip":
+        return strip_labels(messages)
+    if variant == "neutral":
+        return neutral_labels(messages)
+    return messages, 0
+
+
 def load_rows(dom: str, want=None) -> dict:
     rows = {}
     with open(SRC / f"{dom}_small/prompt_rows.jsonl") as fp:
@@ -113,7 +149,7 @@ async def wrap_up(client, model, messages, reasoning, sem):
             "wrap_finish": r.choices[0].finish_reason}
 
 
-async def call_one(client, model, row, messages, args, sem):
+async def call_one(client, model, row, messages, args, sem, wrap=True):
     async with sem:
         r = await client.chat.completions.create(
             model=model, messages=messages, max_tokens=args.max_tokens, timeout=args.timeout,
@@ -127,7 +163,7 @@ async def call_one(client, model, row, messages, args, sem):
          "prompt_tokens": r.usage.prompt_tokens if r.usage else None,
          "finish_reason": r.choices[0].finish_reason}
     o["cap_no_answer"] = o["finish_reason"] == "length" and not content.strip()
-    if o["cap_no_answer"]:
+    if o["cap_no_answer"] and wrap:
         try:
             o.update(await wrap_up(client, model, messages, reasoning, sem))
         except Exception as exc:
@@ -277,6 +313,72 @@ async def wrap2_async(args) -> None:
     await client.close()
 
 
+async def rep_async(args) -> None:
+    from openai import AsyncOpenAI
+    client = AsyncOpenAI(base_url=os.environ["READER_BASE_URL"], api_key="EMPTY")
+    model = os.environ.get("READER_MODEL", "Qwen/Qwen3.5-9B")
+    sem = asyncio.Semaphore(args.concurrency)
+    ids = args.ids.split(",") if args.ids else ANCHOR
+    rows = {}
+    for dom in DOMS:
+        for q, r in load_rows(dom, set(ids)).items():
+            rows[q] = {**r, "domain": dom}
+    out = E1 / "runs/iv_rep_small/outputs.jsonl"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    done = set()
+    if out.exists():
+        for line in open(out):
+            o = json.loads(line)
+            done.add((o["variant"], o["question_id"], o["sample"]))
+    variants = args.variants.split(",")
+    todo = [(v, q, s) for s in range(args.samples) for q in ids for v in variants if (v, q, s) not in done]
+    print(f"[rep] {len(ids)} ids x {variants} x {args.samples}: {len(done)} done, {len(todo)} to run", flush=True)
+
+    async def one(v, q, s):
+        msgs, n = variant_messages(rows[q]["messages"], v)
+        o = await call_one(client, model, rows[q], msgs, args, sem, wrap=False)
+        if o["cap_no_answer"]:
+            o.update(await wrap_forced(client, model, msgs, o["reasoning"], sem))
+        o.update({"variant": v, "sample": s, "labels_changed": n})
+        return o
+    tasks = [one(*t) for t in todo]
+    with open(out, "a") as fp:
+        for fut in asyncio.as_completed(tasks):
+            try:
+                o = await fut
+            except Exception as exc:
+                print(f"[rep] request failed: {exc!r}", flush=True)
+                continue
+            r = rows[o["question_id"]]
+            o.update({k: r[k] for k in ("domain", "question_type", "eval_function", "answer_gold")})
+            o["official"] = correct(o["boxed"], o)
+            o["strict"] = correct_strict(o["content"], o)
+            o["forced"] = bool(correct(o["wrap2_boxed"], o)) if o["cap_no_answer"] else o["strict"]
+            fp.write(json.dumps(o, ensure_ascii=False) + "\n"); fp.flush()
+            print(f"[rep] {o['variant']:7} {o['question_id']} s{o['sample']} tok={o['completion_tokens']} "
+                  f"cap={o['cap_no_answer']} forced={o['forced']} ans={(o.get('wrap2_boxed') or o['boxed'])[:40]!r}",
+                  flush=True)
+    await client.close()
+    rep_summary(variants)
+
+
+def rep_summary(variants=("base", "strip", "neutral")) -> None:
+    res = defaultdict(lambda: defaultdict(list))
+    for line in open(E1 / "runs/iv_rep_small/outputs.jsonl"):
+        o = json.loads(line)
+        res[o["question_id"]][o["variant"]].append(o)
+    tot = Counter()
+    for q in sorted(res):
+        cells = []
+        for v in variants:
+            R = res[q][v]
+            k = sum(o["forced"] for o in R); c = sum(o["cap_no_answer"] for o in R)
+            tot[v, "k"] += k; tot[v, "n"] += len(R); tot[v, "cap"] += c
+            cells.append(f"{v} {k}/{len(R)} (cap {c})")
+        print(f"  {q} gold={res[q][variants[0]][0]['answer_gold'][:30]!r:32} " + " | ".join(cells))
+    print("  total " + " | ".join(f"{v} {tot[v, 'k']}/{tot[v, 'n']} (cap {tot[v, 'cap']})" for v in variants))
+
+
 # ----------------------------------------------------------------------------- score
 def correct(boxed: str, row) -> bool:
     return (not is_unknown(boxed)) and score_to_bool(eval_from_spec(row["eval_function"], boxed, row["answer_gold"]))
@@ -369,7 +471,10 @@ def score(args) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("mode", choices=["run", "wrap-old", "wrap2", "score"])
+    ap.add_argument("mode", choices=["run", "wrap-old", "wrap2", "score", "rep", "rep-summary"])
+    ap.add_argument("--ids", default=None)
+    ap.add_argument("--variants", default="base,strip,neutral")
+    ap.add_argument("--samples", type=int, default=4)
     ap.add_argument("--variant", choices=["base", "strip"], default="base")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--max-tokens", type=int, default=20000)
@@ -382,6 +487,10 @@ def main() -> None:
         asyncio.run(wrap_old_async(a))
     elif a.mode == "wrap2":
         asyncio.run(wrap2_async(a))
+    elif a.mode == "rep":
+        asyncio.run(rep_async(a))
+    elif a.mode == "rep-summary":
+        rep_summary(tuple(a.variants.split(",")))
     else:
         score(a)
 
