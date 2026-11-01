@@ -112,11 +112,31 @@ def select(args) -> None:
     print(f"[select] changed total {len(ids_changed)}")
 
 
+def matrix(args) -> None:
+    """E2-format score matrix of the reranker (rows = e2work/scores/<dom>/queries.json, cols = pool order;
+    non-candidates = -inf) -> ~/e1/v2work/scores/<dom>/RR.npy, so step_keys.py eval can score coverage
+    on the evidence rules and the guardrails without a reader run."""
+    for dom in DOMS:
+        rows = json.loads((WORK / "scores" / dom / "queries.json").read_text())
+        row = {r["text"]: i for i, r in enumerate(rows)}
+        store = entry_ids(dom)
+        pos = {e: i for i, e in enumerate(store)}
+        M = np.full((len(rows), len(store)), -np.inf, dtype=np.float32)
+        n = 0
+        for s in iter_jsonl(OUT / f"scores_{dom}.jsonl"):
+            M[row[s["query"]], pos[s["entry_id"]]] = s["p_yes"]
+            n += 1
+        out = E1 / "v2work/scores" / dom / "RR.npy"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.save(out, M)
+        print(f"[matrix] {dom}: {n} scored cells in {M.shape} -> {out}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("what", choices=["pairs", "select"])
+    ap.add_argument("what", choices=["pairs", "select", "matrix"])
     args = ap.parse_args()
-    {"pairs": pairs, "select": select}[args.what](args)
+    {"pairs": pairs, "select": select, "matrix": matrix}[args.what](args)
 
 
 if __name__ == "__main__":
