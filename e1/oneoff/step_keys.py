@@ -51,6 +51,7 @@ ROLE_ORDER = ["RootWebArea", "heading", "tab", "columnheader", "LabelText", "tex
               "radio", "searchbox", "button", "option", "menuitem", "alert", "status", "link"]
 ROLE_RE = re.compile(r"^\s*(?:\[\w+\]\s*)?(" + "|".join(ROLE_ORDER) + r")\s+'([^']{1,400})'")
 STATE_RE = re.compile(r"(?m)^State \d+\s*$")
+TITLE_RE = re.compile(r"rootwebarea '([^']*)'")  # on lower-cased state text
 
 PROMPT = """You are indexing one step of a recorded web-agent trajectory so that it can be found later by questions about how this website looks and works.
 
@@ -225,6 +226,10 @@ def matches(rule: dict, e: dict, states: list[str]) -> bool:
     anyof = [x.lower() for x in rule.get("any", [])]
     none = [x.lower() for x in rule.get("none", [])]
     for s in states:
+        if rule.get("title"):
+            t = TITLE_RE.search(s)
+            if not t or not re.search(rule["title"], t.group(1)):
+                continue
         if all(x in s for x in need) and (not anyof or any(x in s for x in anyof)) and not any(x in s for x in none):
             return True
     return False
