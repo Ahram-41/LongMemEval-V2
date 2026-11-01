@@ -44,6 +44,25 @@ trap resubmit TERM
 export NO_EMBED=1
 # local judge: short prompts, many parallel requests
 [ "$ARM" = ljudge ] && export READER_MAX_LEN=${READER_MAX_LEN:-65536} READER_MAX_SEQS=${READER_MAX_SEQS:-32}
+cd "$REPO"
+# Pre-serve steps (2026-11-02): the reranker needs the GPU to itself; context builds need more RAM than the login node allows.
+#   ARM=rr : Qwen3-Reranker-8B over the E2 candidate pools (rerank_score.py, vllm env), select, build contexts, then run as ARM=e2.
+#   E2BUILD=1 : build <dom>_contexts.jsonl from E2RET before the reader starts.  E2IDS=<file> -> E2FLAGS="--ids-file <file>".
+if [ "$ARM" = rr ]; then
+  need=; for d in web enterprise; do [ -s "$E1/e2work/rerank/scores_$d.jsonl" ] || need=1; done
+  if [ -n "$need" ]; then
+    PATH="$E1/miniforge3/envs/vllm/bin:/usr/local/cuda/bin:$PATH" CUDA_HOME=${CUDA_HOME:-/usr/local/cuda} \
+      "$E1/miniforge3/envs/vllm/bin/python" e1/oneoff/rerank_score.py --gpu-frac ${RR_GPU_FRAC:-0.85} || { echo "[arm] rerank_score failed"; exit 1; }
+  fi
+  "$PY" -I e1/oneoff/rerank_arm.py select || exit 1
+  E2BUILD=1; E2ARM=${E2ARM:-rr_small}; E2CTX=$E1/e2work/contexts/rr; E2RET=$E1/e2work/retrieved/rr; E2IDS=${E2IDS:-$E1/e2work/rerank/ids.txt}; ARM=e2
+fi
+[ -n "${E2IDS:-}" ] && E2FLAGS="${E2FLAGS:-} --ids-file $E2IDS"
+if [ -n "${E2BUILD:-}" ]; then
+  for d in web enterprise; do
+    [ -s "$E2CTX/${d}_contexts.jsonl" ] || "$PY" -I e1/pipeline/build_context.py --domain $d --retrieved "$E2RET/$d.jsonl" --out "$E2CTX/${d}_contexts.jsonl" || { echo "[arm] build_context $d failed"; exit 1; }
+  done
+fi
 source "$REPO/e1/slurm/serve_vllm.sh" || { echo "[arm] vLLM failed to start"; exit 1; }
 cd "$REPO"
 case "$ARM" in
