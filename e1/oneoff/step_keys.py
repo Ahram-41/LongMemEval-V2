@@ -49,7 +49,7 @@ STRUCT_CHARS = 6000
 CHROME_DF = 0.3
 ROLE_ORDER = ["RootWebArea", "heading", "tab", "columnheader", "LabelText", "textbox", "combobox", "checkbox",
               "radio", "searchbox", "button", "option", "menuitem", "alert", "status", "link"]
-ROLE_RE = re.compile(r"^\s*(?:\[\w+\]\s*)?(" + "|".join(ROLE_ORDER) + r")\s+'([^']{1,120})'")
+ROLE_RE = re.compile(r"^\s*(?:\[\w+\]\s*)?(" + "|".join(ROLE_ORDER) + r")\s+'([^']{1,400})'")
 STATE_RE = re.compile(r"(?m)^State \d+\s*$")
 
 PROMPT = """You are indexing one step of a recorded web-agent trajectory so that it can be found later by questions about how this website looks and works.
@@ -88,7 +88,8 @@ def role_items(axtree: str) -> list[tuple[str, str]]:
     for line in axtree.splitlines():
         m = ROLE_RE.match(line)
         if m:
-            out.append((m.group(1), m.group(2).strip()))
+            name = m.group(2).strip()
+            out.append((m.group(1), name if len(name) <= 100 else "..." + name[-100:]))  # long names: boilerplate prefix, keep the tail
     return out
 
 
