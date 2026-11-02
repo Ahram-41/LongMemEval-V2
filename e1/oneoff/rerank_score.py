@@ -60,7 +60,8 @@ def main() -> None:
                 lp = o.outputs[0].logprobs[0]
                 ly = lp[yes].logprob if yes in lp else -1e9
                 ln = lp[no].logprob if no in lp else -1e9
-                p = 1.0 / (1.0 + math.exp(ln - ly))
+                d = ln - ly  # stable sigmoid: a missing token is -1e9, which overflows math.exp
+                p = 0.0 if d > 700 else 1.0 / (1.0 + math.exp(d))
                 fp.write(json.dumps({"question_id": r["question_id"], "query": r["query"], "entry_id": r["entry_id"],
                                      "piece_id": r["piece_id"], "p_yes": p}) + "\n")
         print(f"[rerank] {dom}: {len(rows)} pairs in {time.time() - t0:.0f}s -> scores_{dom}.jsonl", flush=True)
