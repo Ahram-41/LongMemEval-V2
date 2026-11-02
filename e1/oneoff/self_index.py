@@ -38,6 +38,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 E1 = Path(os.environ.get("E1", "~/e1")).expanduser()
 V2 = Path(os.environ.get("V2WORK", str(E1 / "v2work")))
 os.environ.setdefault("E2WORK", str(V2))
+TAG = os.environ.get("SITAG", "si")        # work dir v2work/<TAG>/<dom>; matrices <MAT>.npy / <MAT>k.npy
+MAT = os.environ.get("SIMAT", "SI")
+SIM = os.environ.get("SISIM", "task")      # task = paper Table 9; ui = interface-fact variant (self-index-ui-plan-2026-11-03.md)
 
 TOP_K = 30            # retrieval depth during optimisation and for the Specificity check
 MAX_GEN = 9           # generated keys per document (paper: m_max = 10 including the original)
@@ -137,6 +140,20 @@ Document:
 Answer JSON only:
 {{"problem": "..."}}"""
 
+P_ABSTRACT_UI = """Read the recorded web page below and list, in plain language, the INTERFACE FACTS a person looking at this page could see: which site section and page it is; which buttons, links, tabs, menus, columns and filter or sort options are visible and what they are called; which fields or labels are shown and what values or states they have (checked, selected, read-only, required); any banner, notice or message text and where it sits; what is in the sidebars or header. Describe what is visible, not what task someone is doing. Do not copy raw markup.
+Document:
+<<<DOC START>>>
+{doc}
+<<<DOC END>>>
+Answer JSON only:
+{{"facts": ["...", "..."]}}"""
+
+P_WRITEQ_UI = """You are an assistant that has used this website before and now needs to look up what a particular page shows. You cannot see the page. From the list of interface facts below, write {m} different short search queries, each asking about a DIFFERENT visible element or property: whether a named control is present, what a label or field says, what a banner or message reads, which options a sort or filter offers, where an element sits, or what the navigation path to the page is. Write each query as a compact noun phrase naming the site area, the page, the element and the property, the way a search box query would be written, not as a full question and not with the facts' exact wording.
+Interface facts:
+{facts}
+Answer JSON only:
+{{"queries": ["...", "..."]}}"""
+
 P_WRITEQ = """You are a person in the situation below. You have NOT read any document about it and you do not know its technical vocabulary. Write {m} different questions you would post on a Q&A forum: your concrete observation or goal, what puzzles you, and what you have tried or assumed. Write in everyday language, and make each question a different need or a different way of asking.
 Situation:
 {problem}
@@ -214,7 +231,7 @@ class Embedder:
         from openai import OpenAI
         self.c = OpenAI(base_url=os.environ["LME_EMBEDDING_BASE_URL"], api_key="EMPTY", timeout=600)
         self.model = os.environ.get("LME_EMBEDDING_MODEL", "Qwen/Qwen3-Embedding-8B")
-        self.path = V2 / "si" / dom / "keyvec.npz"
+        self.path = V2 / TAG / dom / "keyvec.npz"
         self.doc: dict[str, np.ndarray] = {}
         self.qry: dict[str, np.ndarray] = {}
         if self.path.exists():
@@ -259,7 +276,7 @@ class Index:
         self.dom, self.ids = dom, ids
         self.pos = {e: i for i, e in enumerate(ids)}
         self.E = np.load(E1 / f"index/agentrunbook_r_{dom}_small/memory_state/embeddings/raw_state.npy").astype(np.float32)
-        self.path = V2 / "si" / dom / "keys.json"
+        self.path = V2 / TAG / dom / "keys.json"
         self.keys: dict[str, list[str]] = json.loads(self.path.read_text()) if self.path.exists() else {}
 
     def save(self) -> None:
@@ -295,6 +312,10 @@ def simulate(dom: str, llm: LLM, ids, docs, rng: random.Random, used: list[str],
     sample = rng.sample(range(len(ids)), min(SIM_DOCS, len(ids)))
 
     def abstract(i):
+        if SIM == "ui":
+            j = parse_json(llm.ask(P_ABSTRACT_UI.format(doc=docs[i]), 700)) or {}
+            facts = [str(x).strip() for x in j.get("facts", []) if str(x).strip()]
+            return "\n".join(f"- {f}" for f in facts[:20])
         j = parse_json(llm.ask(P_ABSTRACT.format(doc=docs[i]), 400)) or {}
         return str(j.get("problem", "")).strip()
     problems = llm.pmap(abstract, sample, workers)
@@ -302,7 +323,10 @@ def simulate(dom: str, llm: LLM, ids, docs, rng: random.Random, used: list[str],
     def write(p):
         if not p:
             return []
-        j = parse_json(llm.ask(P_WRITEQ.format(m=SIM_M, problem=p), 600)) or {}
+        if SIM == "ui":
+            j = parse_json(llm.ask(P_WRITEQ_UI.format(m=SIM_M, facts=p), 600)) or {}
+        else:
+            j = parse_json(llm.ask(P_WRITEQ.format(m=SIM_M, problem=p), 600)) or {}
         return [str(q).strip() for q in j.get("queries", []) if str(q).strip()][:SIM_M]
     cands = llm.pmap(write, problems, workers)
     pairs = [(q, i) for i, qs in zip(sample, cands) for q in qs]
@@ -327,7 +351,7 @@ def simulate(dom: str, llm: LLM, ids, docs, rng: random.Random, used: list[str],
 # ---------------------------------------------------------------- one iteration (Algorithms 1-2)
 def iterate(dom: str, t: int, llm: LLM, emb: Embedder, idx: Index, ids, docs, heads, rng, workers: int) -> None:
     rec = {"iter": t}
-    qpath = V2 / "si" / dom / "queries.jsonl"
+    qpath = V2 / TAG / dom / "queries.jsonl"
     used = [json.loads(l)["query"] for l in open(qpath)] if qpath.exists() else []
     Qs = simulate(dom, llm, ids, docs, rng, used, workers, rec)
     if not Qs:
@@ -470,17 +494,17 @@ def iterate(dom: str, t: int, llm: LLM, emb: Embedder, idx: Index, ids, docs, he
                 "docs_with_keys": sum(1 for e in ids if idx.keys.get(e)), "total_gen_keys": sum(len(v) for v in idx.keys.values()),
                 "examples": examples, "llm_calls": llm.calls, "llm_in_tok": llm.in_tok, "llm_out_tok": llm.out_tok})
     idx.save(); emb.save()
-    (V2 / "si" / dom / f"iter_{t}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1))
+    (V2 / TAG / dom / f"iter_{t}.json").write_text(json.dumps(rec, ensure_ascii=False, indent=1))
     log(f"iter {t} {dom}: q={len(qtexts)} retrieved_docs={len(hits)} diagnosed={len(todo)} proposed={len(props)} "
         f"faithful={n_f} specific={n_spec} separated={n_sep} updated={n_upd} docs_with_keys={rec['docs_with_keys']} keys={rec['total_gen_keys']}")
 
 
 def do_iterate(dom: str, iters: int, workers: int, seed: int) -> None:
-    (V2 / "si" / dom).mkdir(parents=True, exist_ok=True)
+    (V2 / TAG / dom).mkdir(parents=True, exist_ok=True)
     ids, docs, heads = load_pool(dom)
     llm, emb, idx = LLM(), Embedder(dom), Index(dom, ids)
     emb.ensure([k for v in idx.keys.values() for k in v])
-    done = sorted(int(p.stem.split("_")[1]) for p in (V2 / "si" / dom).glob("iter_*.json")) if (V2 / "si" / dom).exists() else []
+    done = sorted(int(p.stem.split("_")[1]) for p in (V2 / TAG / dom).glob("iter_*.json")) if (V2 / TAG / dom).exists() else []
     start = (done[-1] + 1) if done else 0
     rng = random.Random(seed + start)
     for t in range(start, start + iters):
@@ -505,8 +529,8 @@ def do_score(dom: str) -> None:
         S = Q @ M[gen].T
         for n, j in enumerate(gen):
             np.maximum(SIk[:, owners[j]], S[:, n], out=SIk[:, owners[j]])
-    np.save(d / "SIk.npy", SIk)
-    np.save(d / "SI.npy", np.maximum(V, SIk))
+    np.save(d / f"{MAT}k.npy", SIk)
+    np.save(d / f"{MAT}.npy", np.maximum(V, SIk))
     log(f"score {dom}: {len(gen)} generated keys over {len(set(owners[gen].tolist()) if gen else [])} docs; "
         f"SI/SIk {V.shape} -> {d}")
 
