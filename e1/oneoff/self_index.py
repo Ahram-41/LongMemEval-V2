@@ -41,6 +41,7 @@ os.environ.setdefault("E2WORK", str(V2))
 TAG = os.environ.get("SITAG", "si")        # work dir v2work/<TAG>/<dom>; matrices <MAT>.npy / <MAT>k.npy
 MAT = os.environ.get("SIMAT", "SI")
 SIM = os.environ.get("SISIM", "task")      # task = paper Table 9; ui = interface-fact variant (self-index-ui-plan-2026-11-03.md)
+KEYSTYLE = os.environ.get("SIKEY", "need")  # need = paper Table 7 wording; ui = keys describe visible interface facts (self-index-ui-plan-2026-11-03.md v2)
 
 TOP_K = 30            # retrieval depth during optimisation and for the Specificity check
 MAX_GEN = 9           # generated keys per document (paper: m_max = 10 including the original)
@@ -74,6 +75,10 @@ Answer JSON only:
 ],
 "revision": "<what to change>"}}"""
 
+GUIDANCE_NEED = """Revise the key set as a whole. Keep the keys that still serve the document, drop or rewrite the diagnosed ones, and write at most {k} new or rewritten keys so that anyone who needs what this document provides can find it, whatever they already know and however they would ask. Write each key in the words such a searcher would use, not in the document's words. Decide the form and length of each key yourself, from the document and from how people would look for it. Each key must serve a need, a situation, or a way of asking that the other keys do not. Do not restate or copy the document; do not repeat a kept key."""
+
+GUIDANCE_UI = """Revise the key set as a whole. Keep the keys that still serve the document, drop or rewrite the diagnosed ones, and write at most {k} new or rewritten keys so that anyone who later needs to know WHAT THIS PAGE SHOWS can find it. Each key names one visible interface fact of this page the way a searcher would phrase a lookup: which site area and page it is and which named buttons, links, tabs, menu entries, grid columns, filter or sort options, field labels with their values or states, banners, notices or sidebar items are visible, and where they sit. Keys describe what is on the page, not the task the agent was doing and not the entity-specific data values unless they are themselves interface text. Decide the form and length of each key yourself. Each key must cover an element or property that the other keys do not. Do not restate or copy the document; do not repeat a kept key."""
+
 P_REVISE = """You maintain the search index entry of the document below: a set of KEYS, short texts the search engine matches against user queries. A query retrieves the document through whichever key matches best.
 DOCUMENT:
 <<<DOC START>>>
@@ -85,7 +90,7 @@ SUGGESTED CHANGES FROM SELF-DIAGNOSIS:
 {diagnosis}
 COMPETING KEYS (index entries of other documents retrieved for the same queries; use these to identify what the current document provides that its keys should distinguish more clearly):
 {neighbors}
-Revise the key set as a whole. Keep the keys that still serve the document, drop or rewrite the diagnosed ones, and write at most {k} new or rewritten keys so that anyone who needs what this document provides can find it, whatever they already know and however they would ask. Write each key in the words such a searcher would use, not in the document's words. Decide the form and length of each key yourself, from the document and from how people would look for it. Each key must serve a need, a situation, or a way of asking that the other keys do not. Do not restate or copy the document; do not repeat a kept key.
+{guidance}
 Every key you write must satisfy three requirements:
 - FAITHFUL: it describes only knowledge this document actually contains or resolves; nothing invented, nothing the document does not support.
 - SPECIFIC: it captures what is specific to THIS document, not content broadly shared with other documents in the corpus.
@@ -439,7 +444,8 @@ def iterate(dom: str, t: int, llm: LLM, emb: Embedder, idx: Index, ids, docs, he
         diag_txt = guidance + ("" if 0 not in marks else f"\n(original page text key: {marks[0]})")
         neigh = "\n".join(f"- {neigh_label(j)[:NEIGH_CHARS]}" for j in comp_js) or "(none)"
         k_new = MAX_GEN
-        out = parse_json(llm.ask(P_REVISE.format(doc=docs[i], keys=keys_txt, diagnosis=diag_txt, neighbors=neigh, k=k_new), 900)) or {}
+        g = (GUIDANCE_UI if KEYSTYLE == "ui" else GUIDANCE_NEED).format(k=k_new)
+        out = parse_json(llm.ask(P_REVISE.format(doc=docs[i], keys=keys_txt, diagnosis=diag_txt, neighbors=neigh, guidance=g), 900)) or {}
         keep = [n for n in out.get("keep", []) if isinstance(n, int) and 0 <= n < len(gen)]
         new = [str(s).strip() for s in out.get("revised", []) if str(s).strip()]
         kept = [ktexts[gen[n]] for n in keep]
