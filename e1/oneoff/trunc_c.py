@@ -82,9 +82,10 @@ def is_raw(item) -> bool:
     return item.get("type") == "text" and item["value"].startswith("### Raw state result ")
 
 
-def a0_rows(dom: str) -> dict:
+def a0_rows(dom: str, runs=None) -> dict:
+    """Reference prompt rows (official truncation): A0 by default, or e.g. rr_small for C2."""
     out = {}
-    for d in A0_RUNS:
+    for d in runs or A0_RUNS:
         for r in iter_jsonl(E1 / f"runs/{d}/{dom}_small/prompt_rows.jsonl"):
             out[r["question_id"]] = {"mc": r["memory_context"], "orig": int(r["memory_context_original_token_count"]),
                                      "trunc": str(r["memory_context_was_truncated"]) == "True", "row": r}
@@ -157,19 +158,20 @@ def cut_context(mc: list, orig_tokens: int, variant: str, tok, chrome: set[str] 
     return out, stats
 
 
-def do_build(variants: list[str]) -> None:
+def do_build(variants: list[str], runs, contexts: Path, prefix: str) -> None:
     tok = tokenizer()
     for dom in step_keys.DOMS:
-        A0 = a0_rows(dom)
-        ctx = {r["question_id"]: r["memory_context"] for r in iter_jsonl(E1 / f"e2work/contexts/e2_v/{dom}_contexts.jsonl")
+        A0 = a0_rows(dom, runs)
+        ctx = {r["question_id"]: r["memory_context"] for r in iter_jsonl(contexts / f"{dom}_contexts.jsonl")
                if r["question_id"] in A0}
         bad = [q for q in A0 if A0[q]["mc"] != ctx[q][:len(A0[q]["mc"])]]
         print(f"[check] {dom}: A0 rows {len(A0)}; A0 context is a prefix of the e2_v context for {len(A0) - len(bad)}", flush=True)
         assert not bad, bad[:5]
         chrome = chrome_lines(dom) if "chrome" in variants else None
         for v in variants:
-            d = OUT / v
+            d = OUT / (prefix + v)
             d.mkdir(parents=True, exist_ok=True)
+            (d / f"{dom}_truncated_ids.txt").write_text(",".join(sorted(q for q in A0 if A0[q]["trunc"])))
             with open(d / f"{dom}_contexts.jsonl", "w") as fp:
                 for q in sorted(A0):
                     if A0[q]["trunc"]:
@@ -198,7 +200,7 @@ def raw_states(mc: list, pool_idx: dict) -> list[tuple[dict, list[str]]]:
     return out
 
 
-def do_eval(variants: list[str], evidence: Path, out: Path) -> None:
+def do_eval(variants: list[str], evidence: Path, out: Path, runs, contexts: Path, prefix: str) -> None:
     from e1.analysis.retrieval_eval import _official_metrics, answer_phrases
     from e1.pipeline.retrieve import meta
     normalize_phrase = _official_metrics()[0]
@@ -206,9 +208,9 @@ def do_eval(variants: list[str], evidence: Path, out: Path) -> None:
     scored = {json.loads(l)["question_id"] for l in open(E1 / "e2work/reports/iv_scores.jsonl")}
     res = {"variants": variants, "ops": {}, "phrase": {}, "evidence": {}, "per_q": {}}
     for dom in step_keys.DOMS:
-        A0, M = a0_rows(dom), meta(dom)
-        ctx0 = {r["question_id"]: r["memory_context"] for r in iter_jsonl(E1 / f"e2work/contexts/e2_v/{dom}_contexts.jsonl") if r["question_id"] in A0}
-        C = {v: {r["question_id"]: r for r in iter_jsonl(OUT / v / f"{dom}_contexts.jsonl")} for v in variants}
+        A0, M = a0_rows(dom, runs), meta(dom)
+        ctx0 = {r["question_id"]: r["memory_context"] for r in iter_jsonl(contexts / f"{dom}_contexts.jsonl") if r["question_id"] in A0}
+        C = {v: {r["question_id"]: r for r in iter_jsonl(OUT / (prefix + v) / f"{dom}_contexts.jsonl")} for v in variants}
         R = {q8: r for q8, r in rules.items() if r["domain"] == dom}
         need = {q for q in A0 if A0[q]["trunc"] and any(q.startswith(q8) for q8 in R)}
         pool_idx = {e["entry_id"]: {"slice_urls": e["slice_urls"], "goal": e["goal"]} for e in step_keys.pool(dom)} if need else {}
@@ -256,17 +258,87 @@ def do_eval(variants: list[str], evidence: Path, out: Path) -> None:
     print(json.dumps({k: res[k] for k in ("ops", "phrase", "evidence", "stats")}, indent=1))
 
 
+def do_rows_check(rows_dir: Path, untruncated: bool, same_as) -> None:
+    """GPU-node check of built prompt rows: no further official truncation (C), or identical contexts (A0 rebuild)."""
+    bad = 0
+    for dom in step_keys.DOMS:
+        ref = a0_rows(dom, same_as) if same_as else None
+        n = 0
+        for r in iter_jsonl(rows_dir / f"{dom}_small/prompt_rows.jsonl"):
+            n += 1
+            q = r["question_id"]
+            if untruncated and str(r["memory_context_was_truncated"]) == "True":
+                bad += 1; print(f"[rows-check] {dom} {q}: officially truncated again "
+                                f"({r['memory_context_original_token_count']} tokens)")
+            if ref is not None and r["memory_context"] != ref[q]["mc"]:
+                bad += 1; print(f"[rows-check] {dom} {q}: context differs from the reference rows")
+        print(f"[rows-check] {rows_dir.name} {dom}: {n} rows", flush=True)
+    print(f"[rows-check] {rows_dir.name}: {bad} problems", flush=True)
+    sys.exit(1 if bad else 0)
+
+
+def do_score(out: Path) -> None:
+    """Pre-registered C1 / C2 readout: strict + forced wrap-up, 2 samples per arm (trunc-reader-plan §2)."""
+    import collections
+    from reader_interventions import correct, correct_strict
+    def arm(v):
+        res = {}
+        for dom in step_keys.DOMS:
+            p = E1 / f"runs/iv_{v}_small/{dom}_small/outputs.jsonl"
+            if not p.exists():
+                continue
+            for o in iter_jsonl(p):
+                ok = bool(correct(o["wrap2_boxed"], o)) if o["cap_no_answer"] else correct_strict(o["content"], o)
+                res[o["question_id"]] = (ok, o["cap_no_answer"])
+        return res
+    F = collections.defaultdict(dict)
+    for r in iter_jsonl(E1 / "e2work/reports/iv_scores.jsonl"):
+        F[r["question_id"]][r["variant"]] = str(r["forced"]) == "True"
+    stab = {q: "stable-wrong" if not any(v.values()) else "stable-right" if all(v.values()) else "unstable" for q, v in F.items()}
+    report = {}
+    for name, ctl, trt in [("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc")]:
+        A = [arm(f"{ctl}_s1"), arm(f"{ctl}_s2")]
+        B = [arm(f"{trt}_s1"), arm(f"{trt}_s2")]
+        qs = sorted(set.intersection(*[set(x) for x in A + B]))
+        a = {q: sum(x[q][0] for x in A) for q in qs}
+        b = {q: sum(x[q][0] for x in B) for q in qs}
+        fix = [q for q in qs if a[q] == 0 and b[q] == 2]
+        brk = [q for q in qs if a[q] == 2 and b[q] == 0]
+        net = sum(b.values()) - sum(a.values())
+        verdict = ("adopt" if len(fix) >= 3 and len(brk) <= 1 and net >= 4 else
+                   "reject" if len(fix) <= len(brk) or net <= 0 else "inconclusive")
+        by = collections.Counter((stab.get(q, "?"), b[q] - a[q]) for q in qs)
+        report[name] = {"n": len(qs), "control_correct": sum(a.values()), "treatment_correct": sum(b.values()), "net": net,
+                        "stable_fixed": fix, "stable_broken": brk, "verdict": verdict,
+                        "caps": {"control": sum(x[q][1] for x in A for q in qs), "treatment": sum(x[q][1] for x in B for q in qs)},
+                        "by_b1_stability": {f"{k[0]} {k[1]:+d}": c for k, c in sorted(by.items())},
+                        "per_q": {q: [a[q], b[q], stab.get(q, "?")] for q in qs}}
+    out.write_text(json.dumps(report, indent=1))
+    print(json.dumps({k: {x: v[x] for x in v if x != "per_q"} for k, v in report.items()}, indent=1))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("stage", choices=["build", "eval"])
+    ap.add_argument("stage", choices=["build", "eval", "rows-check", "score"])
+    ap.add_argument("--ref-runs", default=",".join(A0_RUNS), help="run dirs whose prompt rows are the official-truncation reference")
+    ap.add_argument("--contexts", default=str(E1 / "e2work/contexts/e2_v"), help="pre-truncation contexts of those rows")
+    ap.add_argument("--prefix", default="", help="output dir prefix under ~/e1/v2work/trunc (e.g. rr_)")
+    ap.add_argument("--rows", default=None)
+    ap.add_argument("--untruncated", action="store_true")
+    ap.add_argument("--same-as", default=None)
     ap.add_argument("--variants", default="head,mid,chrome")
     ap.add_argument("--evidence", default=str(step_keys.V2 / "evidence.json"))
     ap.add_argument("--out", default=str(step_keys.V2 / "reports/trunc_c.json"))
     a = ap.parse_args()
+    runs, ctx = a.ref_runs.split(","), Path(a.contexts).expanduser()
     if a.stage == "build":
-        do_build(a.variants.split(","))
+        do_build(a.variants.split(","), runs, ctx, a.prefix)
+    elif a.stage == "eval":
+        do_eval(a.variants.split(","), Path(a.evidence).expanduser(), Path(a.out).expanduser(), runs, ctx, a.prefix)
+    elif a.stage == "score":
+        do_score(step_keys.V2 / "reports/trunc_reader.json")
     else:
-        do_eval(a.variants.split(","), Path(a.evidence).expanduser(), Path(a.out).expanduser())
+        do_rows_check(Path(a.rows).expanduser(), a.untruncated, a.same_as.split(",") if a.same_as else None)
 
 
 if __name__ == "__main__":

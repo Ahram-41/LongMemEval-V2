@@ -199,7 +199,7 @@ async def run_async(args) -> None:
                     done.add(json.loads(line)["question_id"])
                 except Exception:
                     pass
-        rows = load_rows(dom)
+        rows = load_rows(dom, args.want)
         order = sorted(rows)
         random.Random(0).shuffle(order)  # same order in both variants, so partial runs stay paired
         order = [q for q in order if q not in done][: args.limit or None]
@@ -215,7 +215,7 @@ async def run_async(args) -> None:
                 jobs[q] = (rows[q]["messages"], 0)
 
         async def one(q):
-            if args.variant not in LAYOUT:
+            if args.variant not in LAYOUT and not args.src:  # --src rows: replayed as-is, forced wrap-up inline
                 return await call_one(client, model, rows[q], jobs[q][0], args, sem)
             o = await call_one(client, model, rows[q], jobs[q][0], args, sem, wrap=False)
             if o["cap_no_answer"]:
@@ -516,12 +516,21 @@ def main() -> None:
     ap.add_argument("--ids", default=None)
     ap.add_argument("--variants", default="base,strip,neutral")
     ap.add_argument("--samples", type=int, default=4)
-    ap.add_argument("--variant", choices=list(VARIANTS), default="base")
+    ap.add_argument("--variant", default="base",
+                    help=f"{'|'.join(VARIANTS)}; with --src any name (rows replayed as-is, forced wrap-up inline)")
+    ap.add_argument("--src", default=None, help="prompt-rows run dir instead of runs/b1_small (C reader stage, 2026-11-02)")
+    ap.add_argument("--ids-file", default=None, help="comma-separated question ids to run (with --src)")
     ap.add_argument("--concurrency", type=int, default=8)
     ap.add_argument("--max-tokens", type=int, default=20000)
     ap.add_argument("--timeout", type=float, default=7200)
     ap.add_argument("--limit", type=int, default=None)
     a = ap.parse_args()
+    if a.src:
+        global SRC
+        SRC = Path(a.src).expanduser()
+    elif a.variant not in VARIANTS:
+        ap.error(f"--variant {a.variant} needs --src")
+    a.want = {x for x in Path(a.ids_file).expanduser().read_text().split(",") if x} if a.ids_file else None
     if a.mode == "run":
         asyncio.run(run_async(a))
     elif a.mode == "wrap-old":

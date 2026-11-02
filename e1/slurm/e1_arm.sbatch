@@ -201,6 +201,23 @@ case "$ARM" in
         # IV_VARIANT=dedup (control: chrome once + exact repeats -> pointers) or trad2 (second trad sample)
         "$PY" e1/oneoff/reader_interventions.py run --variant ${IV_VARIANT:-trad} --concurrency ${IV_CONC:-12} ${LIMIT:+--limit $LIMIT} & wait $!; rc=$?
         [ $rc = 0 ] && { "$PY" e1/oneoff/reader_interventions.py score || true; } ;;
+  trc)  # C reader stage (CP5101 trunc-reader-plan-2026-11-02.md): build prompt rows on the GPU node (official
+        # counter), check them, then 2 samples per arm with forced wrap-up inline. C1 = A0 vs C on the A0-truncated
+        # questions; C2 = RR vs RR+C on the RR-truncated ones. Contexts from trunc_c.py build (CPU).
+        V2=$E1/v2work; TR=$V2/trunc; rc=0
+        mk() { "$PY" e1/pipeline/make_prompt_rows.py --contexts "$1" --retrieved "$2" --dst "$3" --force-rerun --ids-file "$4" ${5:-} & wait $!; }
+        ids() { cat "$1/web_truncated_ids.txt"; echo -n ,; cat "$1/enterprise_truncated_ids.txt"; }
+        ids "$TR/head" > "$V2/c1_ids.txt"; ids "$TR/rr_head" > "$V2/c2_ids.txt"
+        [ -s "$E1/runs/c1_a0_small/enterprise_small/prompt_rows.jsonl" ] || mk "$E1/e2work/contexts/e2_v" "$E1/e2work/retrieved/e2_v" "$E1/runs/c1_a0_small" "$V2/c1_ids.txt" "--only regenerated" || { killsrv; exit 1; }
+        [ -s "$E1/runs/c1_c_small/enterprise_small/prompt_rows.jsonl" ] || mk "$TR/head" "$E1/e2work/retrieved/e2_v" "$E1/runs/c1_c_small" "$V2/c1_ids.txt" "--only regenerated" || { killsrv; exit 1; }
+        [ -s "$E1/runs/c2_rc_small/enterprise_small/prompt_rows.jsonl" ] || mk "$TR/rr_head" "$E1/e2work/retrieved/rr" "$E1/runs/c2_rc_small" "$V2/c2_ids.txt" || { killsrv; exit 1; }
+        "$PY" e1/oneoff/trunc_c.py rows-check --rows "$E1/runs/c1_a0_small" --same-as e2_ordA0_small,e2_ordA0rest_small || { killsrv; exit 1; }
+        "$PY" e1/oneoff/trunc_c.py rows-check --rows "$E1/runs/c1_c_small" --untruncated || { killsrv; exit 1; }
+        "$PY" e1/oneoff/trunc_c.py rows-check --rows "$E1/runs/c2_rc_small" --untruncated || { killsrv; exit 1; }
+        for spec in ${TRC_ARMS:-c1a0_s1:c1_a0:c1 c1c_s1:c1_c:c1 c2rr_s1:rr:c2 c2rc_s1:c2_rc:c2 c1a0_s2:c1_a0:c1 c1c_s2:c1_c:c1 c2rr_s2:rr:c2 c2rc_s2:c2_rc:c2}; do
+          IFS=: read -r V SRCARM SET <<< "$spec"
+          "$PY" e1/oneoff/reader_interventions.py run --variant "$V" --src "$E1/runs/${SRCARM}_small" --ids-file "$V2/${SET}_ids.txt" --concurrency ${IV_CONC:-12} & wait $! || rc=$?
+        done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
