@@ -273,6 +273,8 @@ def do_rows_check(rows_dir: Path, untruncated: bool, same_as) -> None:
             if ref is not None and r["memory_context"] != ref[q]["mc"]:
                 bad += 1; print(f"[rows-check] {dom} {q}: context differs from the reference rows")
         print(f"[rows-check] {rows_dir.name} {dom}: {n} rows", flush=True)
+        if n == 0:  # an empty id list once passed this check vacuously
+            bad += 1; print(f"[rows-check] {dom}: no rows")
     print(f"[rows-check] {rows_dir.name}: {bad} problems", flush=True)
     sys.exit(1 if bad else 0)
 
