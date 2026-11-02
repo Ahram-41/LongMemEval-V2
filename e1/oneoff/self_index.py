@@ -247,6 +247,8 @@ class Embedder:
     def save(self) -> None:
         texts = list(self.doc)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if not texts:
+            return
         np.savez(self.path, texts=np.asarray(texts, dtype=object), doc=np.stack([self.doc[t] for t in texts]),
                  qry=np.stack([self.qry[t] for t in texts]))
 
@@ -474,6 +476,7 @@ def iterate(dom: str, t: int, llm: LLM, emb: Embedder, idx: Index, ids, docs, he
 
 
 def do_iterate(dom: str, iters: int, workers: int, seed: int) -> None:
+    (V2 / "si" / dom).mkdir(parents=True, exist_ok=True)
     ids, docs, heads = load_pool(dom)
     llm, emb, idx = LLM(), Embedder(dom), Index(dom, ids)
     emb.ensure([k for v in idx.keys.values() for k in v])
