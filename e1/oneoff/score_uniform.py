@@ -7,7 +7,7 @@ iv_base keeps its forced wrap-up in wrap2.jsonl next to outputs.jsonl; the --src
 (e2work/rerank/stack_score.py scored capped --src rows by the absent wrap_text, i.e. always wrong, and iv_base
 by its older free-form wrap-up, so its strict column is not this rule.)
 
-  python -I e1/oneoff/score_uniform.py --arms "STACK_s1=rrw_s1+c2rc_s1,..." [--ref base] [--ref-arm "K_s1=..."]
+  python -I e1/oneoff/score_uniform.py --arms "STACK_s1=rrw_s1+c2rc_s1,..." [--ref base | --ref "K_s1=base@U+..."] [--n 295]
 """
 from __future__ import annotations
 
@@ -52,9 +52,14 @@ def load(v: str) -> dict:
 
 
 def combine(spec: str) -> dict:
+    """v1+v2+...; v@S keeps only the questions in ~/e1/v2work/sys_S_ids.txt."""
     d = {}
     for p in spec.split("+"):
-        part = load(p)
+        v, _, sub = p.partition("@")
+        part = load(v)
+        if sub:
+            keep = ids(E1 / f"v2work/sys_{sub}_ids.txt")
+            part = {q: r for q, r in part.items() if q in keep}
         dup = set(d) & set(part)
         if dup:
             raise SystemExit(f"{spec}: {len(dup)} questions in more than one part")
@@ -68,7 +73,7 @@ def main() -> None:
     ap.add_argument("--ref", default="base", help="reference: an iv variant, or NAME=v1+v2")
     ap.add_argument("--n", type=int, default=295)
     a = ap.parse_args()
-    ref = combine(a.ref.split("=", 1)[1]) if "=" in a.ref else load(a.ref)
+    ref = combine(a.ref.split("=", 1)[1] if "=" in a.ref else a.ref)
     AW = ids(E1 / "e2work/rerank/ids_always_wrong.txt")
     AR = ids(E1 / "e2work/rerank/ids_always_right.txt")
     print(f"ref {a.ref}: {len(ref)} questions, correct {sum(r['ok'] for r in ref.values())}, caps {sum(r['cap'] for r in ref.values())}")
