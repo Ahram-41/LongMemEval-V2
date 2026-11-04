@@ -12,6 +12,8 @@ estimated as the official original count (A0 prompt rows) minus the text-tokeniz
 prompt rows are built.
 
 Variants: head (C, primary) | mid (official _truncate_middle per state) | chrome (drop pool-chrome lines, then head)
+| uniform (evenly spaced lines up to the same cap; 2026-11-05, professor's head-vs-uniform question)
+| boiler (drop landmark subtrees: navigation/banner/contentinfo/search/complementary/menubar, then head; 2026-11-05)
 
   build : contexts for the 107 regenerated questions -> ~/e1/v2work/trunc/<variant>/<dom>_contexts.jsonl
   eval  : operation checks + answer-phrase proxy + frozen evidence rules, C vs A0 (official truncation)
@@ -23,6 +25,7 @@ import glob
 import json
 import re
 import sys
+import collections
 from collections import Counter
 from pathlib import Path
 
@@ -100,6 +103,40 @@ def chrome_lines(dom: str) -> set[str]:
     return {k for k, c in df.items() if c >= step_keys.CHROME_DF * n}
 
 
+LANDMARKS = ("navigation", "banner", "contentinfo", "search", "complementary", "menubar")
+ROLE = re.compile(r"^(\t*)(?:\[\d+\] )?([A-Za-z]+)")
+
+
+def strip_boiler(ax: str, roles=LANDMARKS) -> tuple[str, collections.Counter]:
+    """AXTree without landmark subtrees; Counter of removed chars per root role."""
+    out, removed, cut_depth, cut_role = [], collections.Counter(), None, None
+    for ln in ax.split("\n"):
+        m = ROLE.match(ln)
+        depth = len(m.group(1)) if m else len(ln) - len(ln.lstrip("\t"))
+        if cut_depth is not None and depth > cut_depth:
+            removed[cut_role] += len(ln) + 1
+            continue
+        cut_depth = None
+        if m and m.group(2) in roles:
+            cut_depth, cut_role = depth, m.group(2)
+            removed[cut_role] += len(ln) + 1
+            continue
+        out.append(ln)
+    return "\n".join(out), removed
+
+
+def uniform_lines(ax: str, c: int, nk: int, tok) -> str:
+    """Keep evenly spaced lines of the AXTree (same token cap c as head), in page order (2026-11-05 variant)."""
+    lines = ax.split("\n")
+    f = c / nk
+    while True:
+        keep = [ln for i, ln in enumerate(lines) if int((i + 1) * f) > int(i * f)]
+        kept = f"...[uniformly sampled {len(keep)} of {len(lines)} lines]...\n" + "\n".join(keep)
+        if len(tok.encode(kept).ids) <= c or f < 1e-4:
+            return kept
+        f *= 0.9
+
+
 def waterfill(lengths: list[int], budget: int) -> int:
     """Largest c with sum(min(n, c)) <= budget."""
     if sum(lengths) <= budget:
@@ -121,10 +158,11 @@ def cut_context(mc: list, orig_tokens: int, variant: str, tok, chrome: set[str] 
         assert render_block(*blocks[i]) == mc[i]["value"], f"parse round trip failed at item {i}"
     axs = [(i, k, ax) for i in idx for k, (_, ax) in enumerate(blocks[i][1])]
     pre_removed = 0
-    if variant == "chrome":
+    if variant in ("chrome", "boiler"):
         new = []
         for i, k, ax in axs:
-            kept = "\n".join(ln for ln in ax.split("\n") if ln.strip() not in chrome)
+            kept = (strip_boiler(ax)[0] if variant == "boiler" else
+                    "\n".join(ln for ln in ax.split("\n") if ln.strip() not in chrome))
             pre_removed += len(tok.encode(ax).ids) - len(tok.encode(kept).ids)
             new.append((i, k, kept))
         axs = new
@@ -143,6 +181,8 @@ def cut_context(mc: list, orig_tokens: int, variant: str, tok, chrome: set[str] 
                 kept = ax
             elif variant == "mid":
                 kept = truncate_middle(ax, max(1, int(len(ax) * c / nk)))
+            elif variant == "uniform":
+                kept = uniform_lines(ax, c, nk, tok)
             else:
                 end = e.offsets[c - 1][1] if c > 0 else 0
                 kept = ax[:end] + f"\n...[truncated {len(ax) - end} chars]...\n"
@@ -279,8 +319,9 @@ def do_rows_check(rows_dir: Path, untruncated: bool, same_as) -> None:
     sys.exit(1 if bad else 0)
 
 
-def do_score(out: Path) -> None:
-    """Pre-registered C1 / C2 readout: strict + forced wrap-up, 2 samples per arm (trunc-reader-plan §2)."""
+def do_score(out: Path, pairs=(("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc"))) -> None:
+    """Pre-registered C1 / C2 readout: strict + forced wrap-up, 2 samples per arm (trunc-reader-plan §2).
+    pairs: (name, control arm, treatment arm); arms are runs/iv_<arm>_s{1,2}_small."""
     import collections
     from reader_interventions import correct, correct_strict
     def arm(v):
@@ -298,7 +339,7 @@ def do_score(out: Path) -> None:
         F[r["question_id"]][r["variant"]] = str(r["forced"]) == "True"
     stab = {q: "stable-wrong" if not any(v.values()) else "stable-right" if all(v.values()) else "unstable" for q, v in F.items()}
     report = {}
-    for name, ctl, trt in [("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc")]:
+    for name, ctl, trt in pairs:
         A = [arm(f"{ctl}_s1"), arm(f"{ctl}_s2")]
         B = [arm(f"{trt}_s1"), arm(f"{trt}_s2")]
         qs = sorted(set.intersection(*[set(x) for x in A + B]))
@@ -331,6 +372,8 @@ def main() -> None:
     ap.add_argument("--variants", default="head,mid,chrome")
     ap.add_argument("--evidence", default=str(step_keys.V2 / "evidence.json"))
     ap.add_argument("--out", default=str(step_keys.V2 / "reports/trunc_c.json"))
+    ap.add_argument("--pairs", default=None, help="score: name:control:treatment,... (default C1, C2); report -> --score-out")
+    ap.add_argument("--score-out", default=str(step_keys.V2 / "reports/trunc_reader.json"))
     a = ap.parse_args()
     runs, ctx = a.ref_runs.split(","), Path(a.contexts).expanduser()
     if a.stage == "build":
@@ -338,7 +381,8 @@ def main() -> None:
     elif a.stage == "eval":
         do_eval(a.variants.split(","), Path(a.evidence).expanduser(), Path(a.out).expanduser(), runs, ctx, a.prefix)
     elif a.stage == "score":
-        do_score(step_keys.V2 / "reports/trunc_reader.json")
+        pairs = [tuple(x.split(":")) for x in a.pairs.split(",")] if a.pairs else (("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc"))
+        do_score(Path(a.score_out).expanduser(), pairs)
     else:
         do_rows_check(Path(a.rows).expanduser(), a.untruncated, a.same_as.split(",") if a.same_as else None)
 

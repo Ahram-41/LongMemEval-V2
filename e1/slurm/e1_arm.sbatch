@@ -218,6 +218,19 @@ case "$ARM" in
           IFS=: read -r V SRCARM SET <<< "$spec"
           "$PY" e1/oneoff/reader_interventions.py run --variant "$V" --src "$E1/runs/${SRCARM}_small" --ids-file "$V2/${SET}_ids.txt" --concurrency ${IV_CONC:-12} & wait $! || rc=$?
         done ;;
+  trc3) # 2026-11-05 cut-shape test (CP5101 experiments/trunc-shape-plan-2026-11-05.md): other per-page cut shapes on the
+        # 74 RR-truncated rule-scored questions, 2 samples each, forced wrap-up inline; control = the existing per-page head
+        # cut samples iv_c2rc_s{1,2}. Contexts from `trunc_c.py build --prefix rr_ --variants <V>` (CPU).
+        # TRC3_VARIANTS: any of uniform mid chrome (one job per variant keeps each job under ~2.5 h)
+        V2=$E1/v2work; TR=$V2/trunc; rc=0
+        for V in ${TRC3_VARIANTS:?}; do
+          DST=$E1/runs/c3_rr_${V}_small
+          [ -s "$DST/enterprise_small/prompt_rows.jsonl" ] || { "$PY" e1/pipeline/make_prompt_rows.py --contexts "$TR/rr_$V" --retrieved "$E1/e2work/retrieved/rr" --dst "$DST" --force-rerun --ids-file "$V2/c2_ids.txt" & wait $!; } || { killsrv; exit 1; }
+          "$PY" e1/oneoff/trunc_c.py rows-check --rows "$DST" --untruncated || { killsrv; exit 1; }
+          for S in 1 2; do
+            "$PY" e1/oneoff/reader_interventions.py run --variant "c3${V}_s$S" --src "$DST" --ids-file "$V2/c2_ids.txt" --concurrency ${IV_CONC:-12} & wait $! || rc=$?
+          done
+        done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
 esac
 killsrv
