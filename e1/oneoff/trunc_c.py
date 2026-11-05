@@ -125,6 +125,28 @@ def strip_boiler(ax: str, roles=LANDMARKS) -> tuple[str, collections.Counter]:
     return "\n".join(out), removed
 
 
+LINE = re.compile(r"^(\t*)(\[([A-Za-z0-9]+)\] )?([A-Za-z]+)(?: '((?:[^'\\]|\\.)*)')?")
+ACTION_ID = re.compile(r"- Action: \w+\('([A-Za-z0-9]+)'")
+
+
+def compact_ax(ax: str, keep_ids: set[str]) -> str:
+    """2026-11-05 'compact' variant: drop element ids "[123] " except those an action in the same block refers to,
+    and drop StaticText lines whose text is contained in the parent line's name (the cell/button already says it).
+    Flags (clickable, visible, ...) and all other text are kept."""
+    out, parent = [], {}
+    for ln in ax.split("\n"):
+        m = LINE.match(ln)
+        if not m:
+            out.append(ln)
+            continue
+        d, name = len(m.group(1)), m.group(5)
+        parent[d] = name or ""
+        if m.group(4) == "StaticText" and name and d > 0 and name in parent.get(d - 1, ""):
+            continue
+        out.append(ln if not m.group(2) or m.group(3) in keep_ids else ln[:d] + ln[d + len(m.group(2)):])
+    return "\n".join(out)
+
+
 def uniform_lines(ax: str, c: int, nk: int, tok) -> str:
     """Keep evenly spaced lines of the AXTree (same token cap c as head), in page order (2026-11-05 variant)."""
     lines = ax.split("\n")
@@ -158,10 +180,11 @@ def cut_context(mc: list, orig_tokens: int, variant: str, tok, chrome: set[str] 
         assert render_block(*blocks[i]) == mc[i]["value"], f"parse round trip failed at item {i}"
     axs = [(i, k, ax) for i in idx for k, (_, ax) in enumerate(blocks[i][1])]
     pre_removed = 0
-    if variant in ("chrome", "boiler"):
+    if variant in ("chrome", "boiler", "boiler2", "compact"):  # boiler2 = boiler after the [b333]-id fix
+        acted = {i: set(ACTION_ID.findall("\n".join(h for h, _ in blocks[i][1]))) for i in idx}
         new = []
         for i, k, ax in axs:
-            kept = (strip_boiler(ax)[0] if variant == "boiler" else
+            kept = (strip_boiler(ax)[0] if variant in ("boiler", "boiler2") else compact_ax(ax, acted[i]) if variant == "compact" else
                     "\n".join(ln for ln in ax.split("\n") if ln.strip() not in chrome))
             pre_removed += len(tok.encode(ax).ids) - len(tok.encode(kept).ids)
             new.append((i, k, kept))

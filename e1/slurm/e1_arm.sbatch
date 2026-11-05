@@ -222,14 +222,14 @@ case "$ARM" in
         # 74 RR-truncated rule-scored questions, 2 samples each, forced wrap-up inline; control = the existing per-page head
         # cut samples iv_c2rc_s{1,2}. Contexts from `trunc_c.py build --prefix rr_ --variants <V>` (CPU).
         # TRC3_VARIANTS: any of uniform mid chrome boiler head (one job per variant keeps each job under ~2.5 h);
-        # head = runs/c3_rr_head_small -> c2_rc_small (same-night control). TRC3_SAMPLES: default "1,2"; pass via the environment (TRC3_SAMPLES="3 4" sbatch --export=ALL), not inside --export=, which splits on commas
+        # head = runs/c3_rr_head_small -> c2_rc_small (same-night control). TRC3_IDS: question ids file (default c2_ids.txt). TRC3_SAMPLES: default "1,2"; pass via the environment (TRC3_SAMPLES="3 4" sbatch --export=ALL), not inside --export=, which splits on commas
         V2=$E1/v2work; TR=$V2/trunc; rc=0
         for V in ${TRC3_VARIANTS:?}; do
           DST=$E1/runs/c3_rr_${V}_small
-          [ -s "$DST/enterprise_small/prompt_rows.jsonl" ] || { "$PY" e1/pipeline/make_prompt_rows.py --contexts "$TR/rr_$V" --retrieved "$E1/e2work/retrieved/rr" --dst "$DST" --force-rerun --ids-file "$V2/c2_ids.txt" & wait $!; } || { killsrv; exit 1; }
+          [ -s "$DST/enterprise_small/prompt_rows.jsonl" ] || { "$PY" e1/pipeline/make_prompt_rows.py --contexts "$TR/rr_$V" --retrieved "$E1/e2work/retrieved/rr" --dst "$DST" --force-rerun --ids-file "${TRC3_IDS:-$V2/c2_ids.txt}" & wait $!; } || { killsrv; exit 1; }
           "$PY" e1/oneoff/trunc_c.py rows-check --rows "$DST" --untruncated || { killsrv; exit 1; }
           SMP=${TRC3_SAMPLES:-1,2}; for S in ${SMP//,/ }; do
-            "$PY" e1/oneoff/reader_interventions.py run --variant "c3${V}_s$S" --src "$DST" --ids-file "$V2/c2_ids.txt" --concurrency ${IV_CONC:-12} & wait $! || rc=$?
+            "$PY" e1/oneoff/reader_interventions.py run --variant "c3${V}_s$S" --src "$DST" --ids-file "${TRC3_IDS:-$V2/c2_ids.txt}" --concurrency ${IV_CONC:-12} & wait $! || rc=$?
           done
         done ;;
   *) echo "unknown ARM=$ARM"; rc=2 ;;
