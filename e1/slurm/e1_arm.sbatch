@@ -221,7 +221,8 @@ case "$ARM" in
   trc3) # 2026-11-05 cut-shape test (CP5101 experiments/trunc-shape-plan-2026-11-05.md): other per-page cut shapes on the
         # 74 RR-truncated rule-scored questions, 2 samples each, forced wrap-up inline; control = the existing per-page head
         # cut samples iv_c2rc_s{1,2}. Contexts from `trunc_c.py build --prefix rr_ --variants <V>` (CPU).
-        # TRC3_VARIANTS: any of uniform mid chrome (one job per variant keeps each job under ~2.5 h)
+        # TRC3_VARIANTS: any of uniform mid chrome boiler head (one job per variant keeps each job under ~2.5 h);
+        # head = runs/c3_rr_head_small -> c2_rc_small (same-night control). TRC3_SAMPLES: default "1 2"
         V2=$E1/v2work; TR=$V2/trunc; rc=0
         for V in ${TRC3_VARIANTS:?}; do
           DST=$E1/runs/c3_rr_${V}_small

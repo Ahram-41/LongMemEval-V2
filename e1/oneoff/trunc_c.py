@@ -321,7 +321,7 @@ def do_rows_check(rows_dir: Path, untruncated: bool, same_as) -> None:
 
 def do_score(out: Path, pairs=(("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc"))) -> None:
     """Pre-registered C1 / C2 readout: strict + forced wrap-up, 2 samples per arm (trunc-reader-plan §2).
-    pairs: (name, control arm, treatment arm); arms are runs/iv_<arm>_s{1,2}_small."""
+    pairs: (name, control arm, treatment arm); an arm is runs/iv_<arm>_s{1,2}_small, or "a+b" = runs/iv_a_small, iv_b_small."""
     import collections
     from reader_interventions import correct, correct_strict
     def arm(v):
@@ -340,13 +340,12 @@ def do_score(out: Path, pairs=(("C1", "c1a0", "c1c"), ("C2", "c2rr", "c2rc"))) -
     stab = {q: "stable-wrong" if not any(v.values()) else "stable-right" if all(v.values()) else "unstable" for q, v in F.items()}
     report = {}
     for name, ctl, trt in pairs:
-        A = [arm(f"{ctl}_s1"), arm(f"{ctl}_s2")]
-        B = [arm(f"{trt}_s1"), arm(f"{trt}_s2")]
+        A, B = ([arm(v) for v in (x.split("+") if "+" in x else [f"{x}_s1", f"{x}_s2"])] for x in (ctl, trt))
         qs = sorted(set.intersection(*[set(x) for x in A + B]))
         a = {q: sum(x[q][0] for x in A) for q in qs}
         b = {q: sum(x[q][0] for x in B) for q in qs}
-        fix = [q for q in qs if a[q] == 0 and b[q] == 2]
-        brk = [q for q in qs if a[q] == 2 and b[q] == 0]
+        fix = [q for q in qs if a[q] == 0 and b[q] == len(B)]
+        brk = [q for q in qs if a[q] == len(A) and b[q] == 0]
         net = sum(b.values()) - sum(a.values())
         verdict = ("adopt" if len(fix) >= 3 and len(brk) <= 1 and net >= 4 else
                    "reject" if len(fix) <= len(brk) or net <= 0 else "inconclusive")
