@@ -104,7 +104,7 @@ def chrome_lines(dom: str) -> set[str]:
 
 
 LANDMARKS = ("navigation", "banner", "contentinfo", "search", "complementary", "menubar")
-ROLE = re.compile(r"^(\t*)(?:\[\d+\] )?([A-Za-z]+)")
+ROLE = re.compile(r"^(\t*)(?:\[[A-Za-z0-9]+\] )?([A-Za-z]+)")
 
 
 def strip_boiler(ax: str, roles=LANDMARKS) -> tuple[str, collections.Counter]:
